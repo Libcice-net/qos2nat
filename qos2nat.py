@@ -33,10 +33,10 @@ class Hosts:
 
         # what nat.conf updates needed
         self.natConfIpsToDelete = set()
-        self.natConfUsersPubipsToAdd = dict()
-        self.natConfIpsToAdd = dict()
-        self.natConfIpsToChange = dict()
-        self.natConfUserRenames = dict()
+        self.natConfUsersPubipsToAdd = dict() # user -> pubip
+        self.natConfIpsToAdd = dict() # ip -> pubip
+        self.natConfIpsToChange = dict() # ip -> newIp
+        self.natConfUserRenames = dict() # ip -> (olduser, newuser)
 
         self.local_network = ipaddress.ip_network(config_local_network)
         self.all_public_ips = set()
@@ -151,7 +151,7 @@ class Hosts:
             self.ip2pubip[ip] = pubip
 
         if ip in self.ip2user and user != self.ip2user[ip]:
-            self.natConfUserRenames[ip] = (user, self.ip2user[ip])
+           self.natConfUserRenames[ip] = (user, self.ip2user[ip])
 
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
@@ -169,16 +169,33 @@ class Hosts:
 
         self.free_public_ips.discard(pubip)
         
-    def readNatConf(self):
+    def writeNatConf(self, pubip, ip, port_src, port_dst, user, comment, natconf_new):
+       
+        if ip in self.natConfIpsToDelete:
+            return
+
+        if ip in self.natConfIpsToChange:
+            ip = self.natConfIpsToChange[ip]
+        elif ip in self.natConfUserRenames:
+            (olduser, newuser) = self.natConfUserRenames[ip]
+            if olduser == user:
+                user = newuser
+ 
+        natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
+        
+    def readNatConf(self, update=False):
 
         natconf = open("nat.conf", 'r')
 
+        if update:
+            natconf_new = open("nat.conf.new", 'w')
+        
         line_num = 0
         for line in natconf:
             line_num += 1
 
             # remove leading/trailing whitespace
-            line = line.strip()
+            #line = line.strip()
 
             m = re.match(r"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)[ \t]+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# ([\S]+)(.*)", line)
             if not m:
@@ -190,6 +207,7 @@ class Hosts:
             port_src = m.group(3)
             port_dst = m.group(4)
             user = m.group(5)
+            comment = m.group(6)
 
             try:
                 pubip = ipaddress.ip_address(pubip)
@@ -202,8 +220,14 @@ class Hosts:
 
             if pubip not in self.all_public_ips:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in libcice.net ranges")
-            
-            self.addNatConf(pubip, ip, port_src, port_dst, user)
+           
+            if update:
+                self.writeNatConf(pubip, ip, port_src, port_dst, user, comment, natconf_new) 
+            else:
+                self.addNatConf(pubip, ip, port_src, port_dst, user)
+
+        if update:
+            natconf_new.close()
 
     def findDifferences(self):
 
@@ -229,6 +253,10 @@ class Hosts:
                         continue
                 print(f"User {user} (public IP {pubip}): removing local IP {ip}")
                 self.natConfIpsToDelete.add(ip)
+            elif ip in self.natConfUserRenames:
+                (olduser, newuser) = self.natConfUserRenames[ip]
+                print(f"Renaming user {olduser} to {newuser} for IP {ip}")
+           
 
         for ip in self.ip2host:
             if ip not in self.ip2pubip:
@@ -261,6 +289,8 @@ try:
     hosts.readNatConf()
     print ("Calculating nat.conf updates:")
     hosts.findDifferences()
+    print ("Writing nat.conf.new")
+    hosts.readNatConf(update=True)
 except ConfError as e:
     print(e)
     sys.exit(1)
