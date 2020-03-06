@@ -18,7 +18,7 @@ class ConfError(RuntimeError):
 
 class Hosts:
 
-    def initNatConf(self):
+    def init_nat_conf(self):
 
         # from nat.conf
         self.pubip2user = dict()
@@ -28,11 +28,11 @@ class Hosts:
         self.pubip_port2ip_port = dict() # (pubip, src) -> (ip, dst)
 
         # what nat.conf updates needed
-        self.natConfIpsToDelete = set()
-        self.natConfUsersPubipsToAdd = dict() # user -> pubip
-        self.natConfIpsToAdd = defaultdict(set) # pubip -> ip
-        self.natConfIpsToChange = dict() # ip -> newIp
-        self.natConfUserRenames = dict() # ip -> (olduser, newuser)
+        self.nat_conf_ips_to_delete = set()
+        self.nat_conf_user2pubip_to_add = dict() # user -> pubip
+        self.nat_conf_pubip2ip_to_add = defaultdict(set) # pubip -> ip
+        self.nat_conf_ips_to_change = dict() # ip -> new_ip
+        self.nat_conf_user_renames = dict() # ip -> (olduser, newuser)
 
         self.free_public_ips = set(self.all_public_ips)
 
@@ -52,9 +52,9 @@ class Hosts:
             net = ip_network(net_str)
             self.all_public_ips.update(net.hosts())
 
-        self.initNatConf()
+        self.init_nat_conf()
 
-    def addQos(self, ip, host, user, shaping = None):
+    def add_qos(self, ip, host, user, shaping = None):
         if ip in self.ip2host:
             host_other = self.ip2host[ip]
             print(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
@@ -82,7 +82,7 @@ class Hosts:
             self.user2shaping[user] = shaping
             self.user2ip[user] = ip
             
-    def readQosConf(self, qosconf):
+    def read_qos_conf(self, qosconf):
 
         line_num = 0
         for line in qosconf:
@@ -130,7 +130,7 @@ class Hosts:
                 shaping = None
 
             try:
-                self.addQos(ip, host, user, shaping)
+                self.add_qos(ip, host, user, shaping)
             except ConfError as e:
                 raise ConfError(f"Error processing qos.conf line {line_num}: {e}")
 
@@ -138,7 +138,7 @@ class Hosts:
             if user not in self.user2shaping:
                 print(f"Warning: No shaping in qos.conf defined for user {user}")
 
-    def addNatConf(self, pubip, ip, port_src, port_dst, user):
+    def add_nat_conf(self, pubip, ip, port_src, port_dst, user):
 
         if port_src != "*" or port_dst != "*":
             try:
@@ -182,7 +182,7 @@ class Hosts:
             self.ip2pubip[ip] = pubip
 
         if ip in self.ip2user and user != self.ip2user[ip]:
-           self.natConfUserRenames[ip] = (user, self.ip2user[ip])
+           self.nat_conf_user_renames[ip] = (user, self.ip2user[ip])
 
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
@@ -200,29 +200,29 @@ class Hosts:
 
         self.free_public_ips.discard(pubip)
         
-    def writeNatConfLine(self, pubip, ip, port_src, port_dst, user, comment, natconf_new):
+    def write_nat_conf_line(self, pubip, ip, port_src, port_dst, user, comment, natconf_new):
        
-        if ip in self.natConfIpsToDelete:
+        if ip in self.nat_conf_ips_to_delete:
             return
 
-        if ip in self.natConfIpsToChange:
-            ip = self.natConfIpsToChange[ip]
-        elif ip in self.natConfUserRenames:
-            (olduser, newuser) = self.natConfUserRenames[ip]
+        if ip in self.nat_conf_ips_to_change:
+            ip = self.nat_conf_ips_to_change[ip]
+        elif ip in self.nat_conf_user_renames:
+            (olduser, newuser) = self.nat_conf_user_renames[ip]
             if olduser == user:
                 user = newuser
         
-        if pubip in self.natConfIpsToAdd:
-            for new_ip in self.natConfIpsToAdd[pubip]:
+        if pubip in self.nat_conf_pubip2ip_to_add:
+            for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
                 # we are adding new local IP to existing public IP, so write the line
                 # next to existing line
                 new_user = self.ip2user[new_ip]
                 natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
-            del (self.natConfIpsToAdd[pubip])
+            del (self.nat_conf_pubip2ip_to_add[pubip])
  
         natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
         
-    def readNatConf(self, natconf, natconf_new=None):
+    def read_nat_conf(self, natconf, natconf_new=None):
 
         line_num = 0
         for line in natconf:
@@ -251,10 +251,10 @@ class Hosts:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in libcice.net ranges")
            
             if natconf_new:
-                self.writeNatConfLine(pubip, ip, port_src, port_dst, user, comment, natconf_new) 
+                self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new) 
             else:
                 try:
-                    self.addNatConf(pubip, ip, port_src, port_dst, user)
+                    self.add_nat_conf(pubip, ip, port_src, port_dst, user)
                 except ConfError as e:
                     raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
 
@@ -265,16 +265,16 @@ class Hosts:
                 print(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
                     
 
-    def updateNatConf(self, natconf_old, natconf_new):
+    def update_nat_conf(self, natconf_old, natconf_new):
 
-        self.readNatConf(natconf_old, natconf_new)
+        self.read_nat_conf(natconf_old, natconf_new)
 
         for (pubip, list_ip) in self.natConfIpsToAdd.items():
             for ip in list_ip:
                 user = self.ip2user[ip]
                 natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
 
-    def findDifferences(self):
+    def find_differences(self):
 
         found = 0
 
@@ -300,13 +300,13 @@ class Hosts:
                     newIp = self.user2ip[user]
                     if newIp not in self.ip2pubip:
                         print(f"User {user} (public IP {pubip}): changing primary local IP from {ip} to {newIp}{fwds}")
-                        self.natConfIpsToChange[ip] = newIp
+                        self.nat_conf_ips_to_change[ip] = newIp
                         continue
                 print(f"User {user} (public IP {pubip}): removing local IP {ip}{fwds}")
-                self.natConfIpsToDelete.add(ip)
-            elif ip in self.natConfUserRenames:
+                self.nat_conf_ips_to_delete.add(ip)
+            elif ip in self.nat_conf_user_renames:
                 found += 1
-                (olduser, newuser) = self.natConfUserRenames[ip]
+                (olduser, newuser) = self.nat_conf_user_renames[ip]
                 # TODO also count forwards? rename also in forwards lines?
                 print(f"Renaming user {olduser} to {newuser} for IP {ip}")
            
@@ -314,7 +314,7 @@ class Hosts:
         for ip in self.ip2host:
             if ip not in self.ip2pubip:
                 found += 1
-                if ip in self.natConfIpsToChange.values():
+                if ip in self.nat_conf_ips_to_change.values():
                     continue
                 host = self.ip2host[ip]
                 user = self.ip2user[ip]
@@ -324,21 +324,21 @@ class Hosts:
                 elif user in self.user2pubip:
                     pubip = self.user2pubip[user]
                     info = f"with existing user's public IP {pubip}"
-                elif user in self.natConfUsersPubipsToAdd:
-                    pubip = self.natConfUsersPubipsToAdd[user]
+                elif user in self.nat_conf_user2pubip_to_add:
+                    pubip = self.nat_conf_user2pubip_to_add[user]
                     info = f"with pending new user's public IP {pubip}"
                 else:
                     if len(self.free_public_ips) == 0:
                         raise ConfError(f"Need new public IP for local IP {ip} (host {host} of user {user}), but none left.")
                     pubip = self.free_public_ips.pop()
-                    self.natConfUsersPubipsToAdd[user] = pubip
+                    self.nat_conf_user2pubip_to_add[user] = pubip
                     info = f"with new user's public IP {pubip}"
                     
                 print(f"User {user}: adding local IP {ip} (host {host}) {info}")
                 self.natConfIpsToAdd[pubip].add(ip)
         return found
 
-    def writeNatUp(self, nat_up):
+    def write_nat_up(self, nat_up):
 
         localnet = self.local_network.with_netmask
 
@@ -359,25 +359,25 @@ hosts = Hosts()
 try:
     print("Reading qos.conf...")
     with open("qos.conf", 'r') as qosconf:
-        hosts.readQosConf(qosconf)
+        hosts.read_qos_conf(qosconf)
 
     print("Reading nat.conf...")
     with open("nat.conf", 'r') as natconf:
-        hosts.readNatConf(natconf)
+        hosts.read_nat_conf(natconf)
 
     print("Calculating nat.conf updates:")
-    diffs = hosts.findDifferences()
+    diffs = hosts.find_differences()
     if diffs > 0:
         print (f"Writing nat.conf.new with {diffs} updates...")
         with open("nat.conf", 'r') as natconf, open("nat.conf.new", 'w') as natconf_new:
-            hosts.updateNatConf(natconf, natconf_new)
+            hosts.update_nat_conf(natconf, natconf_new)
 
         print("Reading nat.conf.new back to verify no more updates detected...")
-        hosts.initNatConf()
+        hosts.init_nat_conf()
         with open("nat.conf.new", 'r') as natconf:
-            hosts.readNatConf(natconf)
+            hosts.read_nat_conf(natconf)
 
-        diffs = hosts.findDifferences()
+        diffs = hosts.find_differences()
         if diffs > 0:
             print(f"Found {diffs} more unexpected updates, aborting.")
             sys.exit(1)
@@ -389,8 +389,7 @@ try:
         nat_up.write("# generated by qos2nat.py\n")
         for line in nat_global:
             nat_up.write(line)
-        #nat_up.write("")
-        hosts.writeNatUp(nat_up)
+        hosts.write_nat_up(nat_up)
 
 except ConfError as e:
     print(e)
