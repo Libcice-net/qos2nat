@@ -3,7 +3,7 @@
 
 import sys
 import re
-import ipaddress
+from ipaddress import ip_address, ip_network
 from collections import defaultdict
 
 config_local_network = "10.92.0.0/16"
@@ -46,10 +46,10 @@ class Hosts:
         self.user2shaping = dict()
         self.users = set()
 
-        self.local_network = ipaddress.ip_network(config_local_network)
+        self.local_network = ip_network(config_local_network)
         self.all_public_ips = set()
         for net_str in config_public_networks:
-            net = ipaddress.ip_network(net_str)
+            net = ip_network(net_str)
             self.all_public_ips.update(net.hosts())
 
         self.initNatConf()
@@ -104,12 +104,10 @@ class Hosts:
                 print (f"Error parsing qos.conf line {line_num}: {line}")
                 break
 
-            ip = m.group(1)
-            host = m.group(2)
-            shaping = m.group(3)
+            (ip, host, shaping) = m.groups()
 
             try:
-                ip = ipaddress.ip_address(ip)
+                ip = ip_address(ip)
             except ValueError as e:
                 raise ConfError(f"Error parsing qos.conf line {line_num}: {e}")
 
@@ -173,7 +171,6 @@ class Hosts:
             else:
                 self.pubip_port2ip_port[pubport] = locport
            
-            # TODO: warn if some public IP has only forwards but no full NAT? 
             self.free_public_ips.discard(pubip)
             return
 
@@ -236,19 +233,14 @@ class Hosts:
 
             m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# ([\S]+)(.*)", line)
             if not m:
-                print (f"Error parsing nat.conf line {line_num}: {line}")
+                print(f"Error parsing nat.conf line {line_num}: {line}")
                 break
             
-            pubip = m.group(1)
-            ip = m.group(2)
-            port_src = m.group(3)
-            port_dst = m.group(4)
-            user = m.group(5)
-            comment = m.group(6)
+            (pubip, ip, port_src, port_dst, user, comment) = m.groups()
 
             try:
-                pubip = ipaddress.ip_address(pubip)
-                ip = ipaddress.ip_address(ip)
+                pubip = ip_address(pubip)
+                ip = ip_address(ip)
             except ValueError as e:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
 
@@ -265,6 +257,12 @@ class Hosts:
                     self.addNatConf(pubip, ip, port_src, port_dst, user)
                 except ConfError as e:
                     raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
+
+        for (pubip, port_src) in self.pubip_port2ip_port:
+            if pubip not in self.pubip2user:
+                (ip, port_dst) = self.pubip_port2ip_port[(pubip, port_src)]
+                user = self.ip2user[ip]
+                print(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
                     
 
     def updateNatConf(self, natconf_old, natconf_new):
@@ -340,30 +338,60 @@ class Hosts:
                 self.natConfIpsToAdd[pubip].add(ip)
         return found
 
+    def writeNatUp(self, nat_up):
+
+        localnet = self.local_network.with_netmask
+
+        for (ip, pubip) in self.ip2pubip.items():
+            nat_up.write(f"-A POSTROUTING -s {ip} ! -d {localnet} -j SNAT --to-source {pubip} \n")
+
+            if not ip in self.ip2portfwd:
+                continue
+
+            for (pubip, pub_port, loc_port) in self.ip2portfwd[ip]:
+                for proto in ("tcp", "udp"):
+                    nat_up.write(f"-A PREROUTING -d {pubip} -p {proto} -m {proto} --dport {pub_port} "
+                                 f"-j DNAT --to-destination {ip}:{loc_port}\n")
+
+        nat_up.write("COMMIT\n") 
+
 hosts = Hosts()
 try:
     print("Reading qos.conf...")
     with open("qos.conf", 'r') as qosconf:
         hosts.readQosConf(qosconf)
+
     print("Reading nat.conf...")
     with open("nat.conf", 'r') as natconf:
         hosts.readNatConf(natconf)
+
     print("Calculating nat.conf updates:")
     diffs = hosts.findDifferences()
     if diffs > 0:
         print (f"Writing nat.conf.new with {diffs} updates...")
         with open("nat.conf", 'r') as natconf, open("nat.conf.new", 'w') as natconf_new:
             hosts.updateNatConf(natconf, natconf_new)
+
+        print("Reading nat.conf.new back to verify no more updates detected...")
         hosts.initNatConf()
-        print("Reading nat.conf.new back to verity no more updates detected...")
         with open("nat.conf.new", 'r') as natconf:
             hosts.readNatConf(natconf)
+
         diffs = hosts.findDifferences()
         if diffs > 0:
             print(f"Found {diffs} more unexpected updates, aborting.")
             sys.exit(1)
     else:
         print("No updates needed")
+
+    print("Generating nat.up...")
+    with open("nat_global.conf", 'r') as nat_global, open("nat.up", 'w') as nat_up:
+        nat_up.write("# generated by qos2nat.py\n")
+        for line in nat_global:
+            nat_up.write(line)
+        #nat_up.write("")
+        hosts.writeNatUp(nat_up)
+
 except ConfError as e:
     print(e)
     sys.exit(1)
