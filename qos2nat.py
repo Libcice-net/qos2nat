@@ -206,7 +206,8 @@ class Hosts:
             self.ip2pubip[ip] = pubip
 
         if ip in self.ip2user and user != self.ip2user[ip]:
-           self.nat_conf_user_renames[ip] = (user, pubip, self.ip2user[ip])
+            self.nat_conf_user_renames[ip] = (user, pubip, self.ip2user[ip])
+            return
 
         if ip in self.ip2user:
             ipuser = self.ip2user[ip]
@@ -216,8 +217,7 @@ class Hosts:
                     logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
             else:
                 self.ipuser2pubip[ipuser] = pubip
-            
-
+         
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
             if pubip != pubip_other:
@@ -245,9 +245,12 @@ class Hosts:
             (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
             if olduser == user:
                 user = newuser
-                # qos.conf line with sharing-olduser changed to sharing-newuser so we should update public ip
-                if olduser in self.user2ip and olduser in self.user2pubip and oldpubip == self.user2pubip[olduser]:
-                    pubip = self.user2pubip[newuser]
+                # qos.conf line changed from user that still exists, or to user that already exists, so change public IP
+                if olduser in self.user2ip or newuser in self.user2pubip:
+                    if newuser in self.user2pubip:
+                        pubip = self.user2pubip[newuser]
+                    else:
+                        pubip = self.nat_conf_user2pubip_to_add[newuser]
         
         if pubip in self.nat_conf_pubip2ip_to_add:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
@@ -334,12 +337,21 @@ class Hosts:
                 found += 1
                 (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
                 ipchange = ""
-                # qos.conf line with sharing-olduser changed to sharing-newuser so we should update public ip
-                if olduser in self.user2ip and olduser in self.user2pubip and oldpubip == self.user2pubip[olduser]:
-                    ipchange = f" and changing public IP {oldpubip} to {self.user2pubip[newuser]}"
+                # qos.conf line changed from user that still exists, or to user that already exists, so change public IP
+                if olduser in self.user2ip or newuser in self.user2pubip:
+                    if newuser in self.user2pubip:
+                        newpubip = self.user2pubip[newuser]
+                    elif newuser in self.nat_conf_user2pubip_to_add:
+                        newpubip = self.nat_conf_user2pubip_to_add[user]
+                    else:
+                        if len(self.free_public_ips) == 0:
+                            raise ConfError(f"Need new public IP for local IP {ip} of user {newuser}), but none left.")
+                        newpubip = self.free_public_ips.pop()
+                        self.nat_conf_user2pubip_to_add[newuser] = newpubip
+                        
+                    ipchange = f" and changing public IP {oldpubip} to {newpubip}"
                 # TODO also count forwards? rename also in forwards lines?
-                logp(f"Renaming user {olduser} to {newuser}{ipchange} for IP {ip}")
-           
+                logp(f"Renaming user {olduser} to {newuser} for IP {ip}{ipchange}")
 
         for ip in self.ip2host:
             if ip not in self.ip2pubip:
