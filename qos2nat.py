@@ -4,6 +4,7 @@
 import sys
 import re
 import shutil
+import os
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
 from datetime import datetime
@@ -16,8 +17,8 @@ config_public_networks = [
 ]
 
 # for debugging/development
-config_prefix="."
-#config_prefix=""
+#config_prefix="."
+config_prefix=""
 
 config_qos_conf = "/etc/qos.conf"
 config_nat_conf = "/etc/nat.conf"
@@ -253,11 +254,11 @@ class Hosts:
             # remove leading/trailing whitespace
             #line = line.strip()
 
-            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# (([\S]+).*)", line)
+            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# ([\S]+)(.*)", line)
             if not m:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
             
-            (pubip, ip, port_src, port_dst, comment, user) = m.groups()
+            (pubip, ip, port_src, port_dst, user, comment) = m.groups()
 
             try:
                 pubip = ip_address(pubip)
@@ -373,8 +374,8 @@ class Hosts:
             if not ip in self.ip2portfwd:
                 continue
 
-            for (pubip, pub_port, loc_port, _, comment) in self.ip2portfwd[ip]:
-                portmap.write(f"{pubip}\t{ip}\t{pub_port}\t{loc_port}\t# {comment}\n")
+            for (pubip, pub_port, loc_port, user, comment) in self.ip2portfwd[ip]:
+                portmap.write(f"{pubip}\t{ip}\t{pub_port}\t{loc_port}\t# {user}{comment}\n")
 
 hosts = Hosts()
 logfile = None
@@ -433,8 +434,18 @@ try:
     with open(f"{config_prefix}{config_portmap}", 'w') as portmap:
         hosts.write_portmap(portmap)
 
-    logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
-         f"remaining public IPs: {len(hosts.free_public_ips)}")
+    if config_prefix == "":
+        logp("Loading new nat.up to iptables")
+        ret = os.system(f"/usr/sbin/iptables-restore {nat_up_name}")
+    else:
+        logp("Skipping iptables-restore due to prefix")
+        ret = 0
+
+    if ret != 0:
+        logp(f"Error {ret} when executing iptables-restore") 
+    else:
+        logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
+             f"remaining public IPs: {len(hosts.free_public_ips)}")
 
 except ConfError as e:
     logp(e)
