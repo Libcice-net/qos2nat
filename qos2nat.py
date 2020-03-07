@@ -17,8 +17,8 @@ config_public_networks = [
 ]
 
 # for debugging/development
-#config_prefix="."
-config_prefix=""
+config_prefix="."
+#config_prefix=""
 
 config_qos_conf = "/etc/qos.conf"
 config_nat_conf = "/etc/nat.conf"
@@ -48,6 +48,7 @@ class Hosts:
         # from nat.conf
         self.pubip2user = dict()
         self.user2pubip = dict()
+        self.ipuser2pubip = dict()
         self.ip2pubip = dict()
         self.ip2portfwd = defaultdict(set) # ip -> set((pubip, src, dst, user, comment))
         self.pubip_port2ip_port = dict() # (pubip, src) -> (ip, dst)
@@ -57,7 +58,7 @@ class Hosts:
         self.nat_conf_user2pubip_to_add = dict() # user -> pubip
         self.nat_conf_pubip2ip_to_add = defaultdict(set) # pubip -> ip
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
-        self.nat_conf_user_renames = dict() # ip -> (olduser, newuser)
+        self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
 
         self.free_public_ips = set(self.all_public_ips)
 
@@ -205,7 +206,17 @@ class Hosts:
             self.ip2pubip[ip] = pubip
 
         if ip in self.ip2user and user != self.ip2user[ip]:
-           self.nat_conf_user_renames[ip] = (user, self.ip2user[ip])
+           self.nat_conf_user_renames[ip] = (user, pubip, self.ip2user[ip])
+
+        if ip in self.ip2user:
+            ipuser = self.ip2user[ip]
+            if ipuser in self.ipuser2pubip:
+                pubip_other = self.ipuser2pubip[ipuser]
+                if pubip != pubip_other:
+                    logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
+            else:
+                self.ipuser2pubip[ipuser] = pubip
+            
 
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
@@ -231,9 +242,12 @@ class Hosts:
         if ip in self.nat_conf_ips_to_change:
             ip = self.nat_conf_ips_to_change[ip]
         elif ip in self.nat_conf_user_renames:
-            (olduser, newuser) = self.nat_conf_user_renames[ip]
+            (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
             if olduser == user:
                 user = newuser
+                # qos.conf line with sharing-olduser changed to sharing-newuser so we should update public ip
+                if olduser in self.user2ip and olduser in self.user2pubip and oldpubip == self.user2pubip[olduser]:
+                    pubip = self.user2pubip[newuser]
         
         if pubip in self.nat_conf_pubip2ip_to_add:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
@@ -318,9 +332,13 @@ class Hosts:
                 self.nat_conf_ips_to_delete.add(ip)
             elif ip in self.nat_conf_user_renames:
                 found += 1
-                (olduser, newuser) = self.nat_conf_user_renames[ip]
+                (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
+                ipchange = ""
+                # qos.conf line with sharing-olduser changed to sharing-newuser so we should update public ip
+                if olduser in self.user2ip and olduser in self.user2pubip and oldpubip == self.user2pubip[olduser]:
+                    ipchange = f" and changing public IP {oldpubip} to {self.user2pubip[newuser]}"
                 # TODO also count forwards? rename also in forwards lines?
-                logp(f"Renaming user {olduser} to {newuser} for IP {ip}")
+                logp(f"Renaming user {olduser} to {newuser}{ipchange} for IP {ip}")
            
 
         for ip in self.ip2host:
