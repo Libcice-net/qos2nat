@@ -3,8 +3,10 @@
 
 import sys
 import re
+import shutil
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
+from datetime import datetime
 
 config_local_network = "10.92.0.0/16"
 config_public_networks = [
@@ -12,6 +14,28 @@ config_public_networks = [
         "89.203.138.0/24",
         "195.146.116.0/24",
 ]
+
+# for debugging/development
+config_prefix="."
+#config_prefix=""
+
+config_qos_conf = "/etc/qos.conf"
+config_nat_conf = "/etc/nat.conf"
+config_nat_global = "/etc/nat_global.conf"
+config_nat_up = "/etc/nat.up"
+config_logfile = "/var/log/qos2nat.log"
+config_nat_backup = "/etc/nat_backup/nat_conf_"
+config_portmap = "/var/www/portmap.txt"
+
+logfile = None
+
+def log(msg):
+    if logfile:
+        logfile.write(f"{msg}\n")
+
+def logp(msg):
+    print(msg)
+    log(msg)
 
 class ConfError(RuntimeError):
     """Unexpected content in conf file"""
@@ -24,7 +48,7 @@ class Hosts:
         self.pubip2user = dict()
         self.user2pubip = dict()
         self.ip2pubip = dict()
-        self.ip2portfwd = defaultdict(set) # ip -> set((pubip, src, dst))
+        self.ip2portfwd = defaultdict(set) # ip -> set((pubip, src, dst, user, comment))
         self.pubip_port2ip_port = dict() # (pubip, src) -> (ip, dst)
 
         # what nat.conf updates needed
@@ -57,7 +81,7 @@ class Hosts:
     def add_qos(self, ip, host, user, shaping = None):
         if ip in self.ip2host:
             host_other = self.ip2host[ip]
-            print(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
+            logp(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
             ip_other = self.host2ip[host_other]
             user_other = self.ip2user[ip_other]
             if user != user_other:
@@ -68,7 +92,7 @@ class Hosts:
         if host in self.host2ip:
             ip_other = self.host2ip[host]
             user_other = self.ip2user[ip_other]
-            print(f"Warning: Duplicate hostname in qos.conf: {host} is IP {ip_other} (user {user_other}) "
+            logp(f"Warning: Duplicate hostname in qos.conf: {host} is IP {ip_other} (user {user_other}) "
                   f"and {ip} (user {user})")
         else:
             self.host2ip[host] = ip
@@ -101,8 +125,7 @@ class Hosts:
 
             m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
             if not m:
-                print (f"Error parsing qos.conf line {line_num}: {line}")
-                break
+                raise ConfError(f"Error parsing qos.conf line {line_num}: {line}")
 
             (ip, host, shaping) = m.groups()
 
@@ -124,8 +147,7 @@ class Hosts:
             else:
                 m = re.match(r"sharing-([\S]+)", shaping)
                 if not m:
-                    print (f"Error parsing qos.conf line {line_num} - shaping not recognized: {shaping}")
-                    break
+                    raiseConfError(f"Error parsing qos.conf line {line_num} - shaping not recognized: {shaping}")
                 user = m.group(1)
                 shaping = None
 
@@ -136,9 +158,9 @@ class Hosts:
 
         for user in self.users:
             if user not in self.user2shaping:
-                print(f"Warning: No shaping in qos.conf defined for user {user}")
+                logp(f"Warning: No shaping in qos.conf defined for user {user}")
 
-    def add_nat_conf(self, pubip, ip, port_src, port_dst, user):
+    def add_nat_conf(self, pubip, ip, port_src, port_dst, user, comment):
 
         if port_src != "*" or port_dst != "*":
             try:
@@ -154,14 +176,14 @@ class Hosts:
             except ValueError:
                 raise ConfError(f"invalid internal port number {port_dst}")
 
-            self.ip2portfwd[ip].add((pubip, port_src, port_dst))
+            self.ip2portfwd[ip].add((pubip, port_src, port_dst, user, comment))
 
             pubport = (pubip, port_src)
             locport = (ip, port_dst)
             if pubport in self.pubip_port2ip_port:
                 other_locport = self.pubip_port2ip_port[pubport]
                 if locport == other_locport:
-                    print(f"Warning: In nat.conf multiple lines with same port forward "
+                    logp(f"Warning: In nat.conf multiple lines with same port forward "
                           f"from public {pubip}:{port_src} to local {ip}:{port_dst}")
                 else:
                     (other_ip, other_port_dst) = other_locport
@@ -187,14 +209,14 @@ class Hosts:
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
             if pubip != pubip_other:
-                print(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
+                logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
         else:
             self.user2pubip[user] = pubip
 
         if pubip in self.pubip2user:
             user_other = self.pubip2user[pubip]
             if user != user_other:
-                print(f"Warning: In nat.conf public IP {pubip} assigned to user {user} but also {user_other}")
+                logp(f"Warning: In nat.conf public IP {pubip} assigned to user {user} but also {user_other}")
         else:
             self.pubip2user[pubip] = user
 
@@ -231,12 +253,11 @@ class Hosts:
             # remove leading/trailing whitespace
             #line = line.strip()
 
-            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# ([\S]+)(.*)", line)
+            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# (([\S]+).*)", line)
             if not m:
-                print(f"Error parsing nat.conf line {line_num}: {line}")
-                break
+                raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
             
-            (pubip, ip, port_src, port_dst, user, comment) = m.groups()
+            (pubip, ip, port_src, port_dst, comment, user) = m.groups()
 
             try:
                 pubip = ip_address(pubip)
@@ -254,7 +275,7 @@ class Hosts:
                 self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new) 
             else:
                 try:
-                    self.add_nat_conf(pubip, ip, port_src, port_dst, user)
+                    self.add_nat_conf(pubip, ip, port_src, port_dst, user, comment)
                 except ConfError as e:
                     raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
 
@@ -262,14 +283,14 @@ class Hosts:
             if pubip not in self.pubip2user:
                 (ip, port_dst) = self.pubip_port2ip_port[(pubip, port_src)]
                 user = self.ip2user[ip]
-                print(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
+                logp(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
                     
 
     def update_nat_conf(self, natconf_old, natconf_new):
 
         self.read_nat_conf(natconf_old, natconf_new)
 
-        for (pubip, list_ip) in self.natConfIpsToAdd.items():
+        for (pubip, list_ip) in self.nat_conf_pubip2ip_to_add.items():
             for ip in list_ip:
                 user = self.ip2user[ip]
                 natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
@@ -277,16 +298,6 @@ class Hosts:
     def find_differences(self):
 
         found = 0
-
-        for user in self.users:
-            if user not in self.user2pubip:
-                #print (f"Warning: qos.conf user {user} not in nat.conf")
-                pass
-
-        for user in self.user2pubip:
-            if user not in self.users:
-                #print (f"Warning: nat.conf user {user} not in qos.conf")
-                pass
 
         for ip in self.ip2pubip:
             if ip not in self.ip2host:
@@ -299,10 +310,10 @@ class Hosts:
                 if user in self.user2ip:
                     newIp = self.user2ip[user]
                     if newIp not in self.ip2pubip:
-                        print(f"User {user} (public IP {pubip}): changing primary local IP from {ip} to {newIp}{fwds}")
+                        logp(f"User {user} (public IP {pubip}): changing primary local IP from {ip} to {newIp}{fwds}")
                         self.nat_conf_ips_to_change[ip] = newIp
                         continue
-                print(f"User {user} (public IP {pubip}): removing local IP {ip}{fwds}")
+                logp(f"User {user} (public IP {pubip}): removing local IP {ip}{fwds}")
                 self.nat_conf_ips_to_delete.add(ip)
             elif ip in self.nat_conf_user_renames:
                 found += 1
@@ -334,7 +345,7 @@ class Hosts:
                     self.nat_conf_user2pubip_to_add[user] = pubip
                     info = f"with new user's public IP {pubip}"
                     
-                print(f"User {user}: adding local IP {ip} (host {host}) {info}")
+                logp(f"User {user}: adding local IP {ip} (host {host}) {info}")
                 self.natConfIpsToAdd[pubip].add(ip)
         return found
 
@@ -348,51 +359,83 @@ class Hosts:
             if not ip in self.ip2portfwd:
                 continue
 
-            for (pubip, pub_port, loc_port) in self.ip2portfwd[ip]:
+            for (pubip, pub_port, loc_port, _, _) in self.ip2portfwd[ip]:
                 for proto in ("tcp", "udp"):
                     nat_up.write(f"-A PREROUTING -d {pubip} -p {proto} -m {proto} --dport {pub_port} "
                                  f"-j DNAT --to-destination {ip}:{loc_port}\n")
 
-        nat_up.write("COMMIT\n") 
+        nat_up.write("COMMIT\n")
+
+    def write_portmap(self, portmap):
+
+        for (ip, pubip) in self.ip2pubip.items():
+            
+            if not ip in self.ip2portfwd:
+                continue
+
+            for (pubip, pub_port, loc_port, _, comment) in self.ip2portfwd[ip]:
+                portmap.write(f"{pubip}\t{ip}\t{pub_port}\t{loc_port}\t# {comment}\n")
 
 hosts = Hosts()
 try:
-    print("Reading qos.conf...")
-    with open("qos.conf", 'r') as qosconf:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+
+    logfile = open(f"{config_prefix}{config_logfile}", 'a')
+    
+    log(f"Start qos2nat.py {timestamp}")
+
+    logp("Reading qos.conf...")
+    with open(f"{config_prefix}{config_qos_conf}", 'r') as qosconf:
         hosts.read_qos_conf(qosconf)
 
-    print("Reading nat.conf...")
-    with open("nat.conf", 'r') as natconf:
+    nat_conf_pre = f"{config_prefix}{config_nat_backup}{timestamp}_pre"
+
+    logp(f"Creating nat.conf backup {nat_conf_pre}")
+    shutil.copyfile(f"{config_prefix}{config_nat_conf}", nat_conf_pre)
+
+    logp("Reading nat.conf...")
+    with open(f"{nat_conf_pre}", 'r') as natconf:
         hosts.read_nat_conf(natconf)
 
-    print("Calculating nat.conf updates:")
+    logp("Calculating nat.conf updates:")
     diffs = hosts.find_differences()
     if diffs > 0:
-        print (f"Writing nat.conf.new with {diffs} updates...")
-        with open("nat.conf", 'r') as natconf, open("nat.conf.new", 'w') as natconf_new:
+        nat_conf_post = f"{config_prefix}{config_nat_backup}{timestamp}_post"
+        logp(f"Writing {nat_conf_post} with {diffs} updates...")
+        with open(nat_conf_pre, 'r') as natconf, open(nat_conf_post, 'w') as natconf_new:
             hosts.update_nat_conf(natconf, natconf_new)
 
-        print("Reading nat.conf.new back to verify no more updates detected...")
+        logp("Reading nat.conf.new back to verify no more updates detected...")
         hosts.init_nat_conf()
-        with open("nat.conf.new", 'r') as natconf:
+        with open(nat_conf_post, 'r') as natconf:
             hosts.read_nat_conf(natconf)
 
         diffs = hosts.find_differences()
         if diffs > 0:
-            print(f"Found {diffs} more unexpected updates, aborting.")
+            logp(f"Found {diffs} more unexpected updates, aborting.")
             sys.exit(1)
+        else:
+            logp(f"No differences, replacing nat.conf with {nat_conf_post}")
+            shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
     else:
-        print("No updates needed")
+        logp("No updates needed")
 
-    print("Generating nat.up...")
-    with open("nat_global.conf", 'r') as nat_global, open("nat.up", 'w') as nat_up:
+    logp("Generating nat.up...")
+    nat_up_name = f"{config_prefix}{config_nat_up}"
+    with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
         nat_up.write("# generated by qos2nat.py\n")
         for line in nat_global:
             nat_up.write(line)
         hosts.write_nat_up(nat_up)
 
+    logp("Generating portmap.txt...")
+    with open(f"{config_prefix}{config_portmap}", 'w') as portmap:
+        hosts.write_portmap(portmap)
+
+    log("End")
+
 except ConfError as e:
     print(e)
     sys.exit(1)
-
-
+finally:
+    logfile.close()
