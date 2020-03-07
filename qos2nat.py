@@ -319,7 +319,7 @@ class Hosts:
                 found += 1
                 (olduser, newuser) = self.nat_conf_user_renames[ip]
                 # TODO also count forwards? rename also in forwards lines?
-                print(f"Renaming user {olduser} to {newuser} for IP {ip}")
+                logp(f"Renaming user {olduser} to {newuser} for IP {ip}")
            
 
         for ip in self.ip2host:
@@ -377,6 +377,7 @@ class Hosts:
                 portmap.write(f"{pubip}\t{ip}\t{pub_port}\t{loc_port}\t# {comment}\n")
 
 hosts = Hosts()
+logfile = None
 try:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
@@ -432,10 +433,13 @@ try:
     with open(f"{config_prefix}{config_portmap}", 'w') as portmap:
         hosts.write_portmap(portmap)
 
-    log("End")
+    logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
+         f"remaining public IPs: {len(hosts.free_public_ips)}")
 
 except ConfError as e:
-    print(e)
+    logp(e)
     sys.exit(1)
 finally:
-    logfile.close()
+    if logfile:
+        logfile.close()
+
