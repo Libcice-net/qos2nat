@@ -297,9 +297,13 @@ class Hosts:
                 except ConfError as e:
                     raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
 
+        # check for port forwards from public IPs that are not fully assigned to a user's private IP
         for (pubip, port_src) in self.pubip_port2ip_port:
             if pubip not in self.pubip2user:
                 (ip, port_dst) = self.pubip_port2ip_port[(pubip, port_src)]
+                # if the public ip is changing, don't warn 
+                if ip in self.nat_conf_pubip_changes:
+                    continue
                 user = self.ip2user[ip]
                 logp(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
                     
@@ -355,8 +359,16 @@ class Hosts:
                         
                     ipchange = f" and changing public IP {oldpubip} to {newpubip}"
                     self.nat_conf_pubip_changes[ip] = (oldpubip, newpubip)
-                # TODO also count forwards? rename also in forwards lines?
-                logp(f"Renaming user {olduser} to {newuser} for IP {ip}{ipchange}")
+                fwds = 0
+                if ip in self.ip2portfwd:
+                    for (fwdpubip, _, _, _, _,) in self.ip2portfwd[ip]:
+                        if fwdpubip == oldpubip:
+                            fwds += 1
+                if fwds == 0:
+                    fwdstr = ""
+                else:
+                    fwdstr = f", including {fwds} defined port forwards"
+                logp(f"Renaming user {olduser} to {newuser} for IP {ip}{ipchange}{fwdstr}")
 
         for ip in self.ip2host:
             if ip not in self.ip2pubip:
