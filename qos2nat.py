@@ -5,6 +5,8 @@ import sys
 import re
 import shutil
 import os
+import string
+import argparse
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
 from datetime import datetime
@@ -17,8 +19,7 @@ config_public_networks = [
 ]
 
 # for debugging/development
-config_prefix="."
-#config_prefix=""
+config_prefix=""
 
 config_qos_conf = "/etc/qos.conf"
 config_nat_conf = "/etc/nat.conf"
@@ -27,6 +28,8 @@ config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
 config_nat_backup = "/etc/nat_backup/nat_conf_"
 config_portmap = "/var/www/portmap.txt"
+config_dns_db = "libcice.db.new"
+config_dns_rev_db = "92.10.db.new"
 
 logfile = None
 
@@ -419,8 +422,58 @@ class Hosts:
             for (pubip, pub_port, loc_port, user, comment) in self.ip2portfwd[ip]:
                 portmap.write(f"{pubip}\t{ip}\t{pub_port}\t{loc_port}\t# {user}{comment}\n")
 
+    def write_dns_hosts(self, db):
+        for (ip, host) in sorted(self.ip2host.items(), key = lambda item: item[1]):
+            host = host.replace("_", "-")
+            db.write(f"{host:<25} IN A            {ip}\n")
+
+    def write_dns_reverse(self, db):
+        current_net = None
+        for (ip, host) in sorted(self.ip2host.items(), key = lambda item: item[0]):
+            if not current_net or ip not in current_net:
+                current_net = ip_network(ip).supernet(new_prefix=24)
+                ipp = current_net.network_address.packed
+                db.write(";##################################################\n")
+                db.write(f"$ORIGIN               {ipp[2]}.{ipp[1]}.{ipp[0]}.in-addr.arpa.\n")
+            host = host.replace("_", "-")
+            db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
+
 hosts = Hosts()
 logfile = None
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--dns", help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat",\
+                    action="store_true")
+parser.add_argument("qos_conf", help=f"qos.conf location, default is {config_qos_conf}",\
+                    nargs='?', default=f"{config_prefix}{config_qos_conf}")
+parser.add_argument("--devel", help=f"development run, prefix all paths with local directory, don't execute iptables",\
+                    action="store_true")
+args = parser.parse_args()
+
+if args.devel:
+    config_prefix="."
+
+qos_conf_path=f"{config_prefix}{args.qos_conf}"
+
+if args.dns:
+    try:
+        print(f"Reading {qos_conf_path} ...")
+        with open(qos_conf_path, 'r') as qosconf:
+            hosts.read_qos_conf(qosconf)
+
+        print(f"Writing {config_dns_db}")
+        with open(config_dns_db, 'w') as db:
+            hosts.write_dns_hosts(db)
+
+        print(f"Writing {config_dns_rev_db}")
+        with open(config_dns_rev_db, 'w') as db:
+            hosts.write_dns_reverse(db)
+
+        sys.exit(0)
+    except ConfError as e:
+        logp(e)
+        sys.exit(1)
+
 try:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
@@ -428,8 +481,8 @@ try:
     
     log(f"Start qos2nat.py {timestamp}")
 
-    logp("Reading qos.conf...")
-    with open(f"{config_prefix}{config_qos_conf}", 'r') as qosconf:
+    logp("Reading {qos_conf_path} ...")
+    with open(qos_conf_path, 'r') as qosconf:
         hosts.read_qos_conf(qosconf)
 
     nat_conf_pre = f"{config_prefix}{config_nat_backup}{timestamp}_pre"
@@ -476,11 +529,11 @@ try:
     with open(f"{config_prefix}{config_portmap}", 'w') as portmap:
         hosts.write_portmap(portmap)
 
-    if config_prefix == "":
+    if not args.devel:
         logp("Loading new nat.up to iptables")
         ret = os.system(f"/usr/sbin/iptables-restore {nat_up_name}")
     else:
-        logp("Skipping iptables-restore due to prefix")
+        logp("Skipping iptables-restore due to --devel")
         ret = 0
 
     if ret != 0:
