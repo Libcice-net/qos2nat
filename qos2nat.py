@@ -59,6 +59,7 @@ class Hosts:
         self.nat_conf_pubip2ip_to_add = defaultdict(set) # pubip -> ip
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
+        self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
 
         self.free_public_ips = set(self.all_public_ips)
 
@@ -241,16 +242,15 @@ class Hosts:
 
         if ip in self.nat_conf_ips_to_change:
             ip = self.nat_conf_ips_to_change[ip]
-        elif ip in self.nat_conf_user_renames:
-            (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
-            if olduser == user:
-                user = newuser
-                # qos.conf line changed from user that still exists, or to user that already exists, so change public IP
-                if olduser in self.user2ip or newuser in self.user2pubip:
-                    if newuser in self.user2pubip:
-                        pubip = self.user2pubip[newuser]
-                    else:
-                        pubip = self.nat_conf_user2pubip_to_add[newuser]
+        else:
+            if ip in self.nat_conf_user_renames:
+                (olduser, _, newuser) = self.nat_conf_user_renames[ip]
+                if olduser == user:
+                    user = newuser
+            if ip in self.nat_conf_pubip_changes:
+                (oldpubip, newpubip) = self.nat_conf_pubip_changes[ip]
+                if oldpubip == pubip:
+                    pubip = newpubip
         
         if pubip in self.nat_conf_pubip2ip_to_add:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
@@ -313,6 +313,12 @@ class Hosts:
                 user = self.ip2user[ip]
                 natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
 
+    def get_new_public_ip(self, user):
+        if len(self.free_public_ips) == 0:
+            raise ConfError(f"Need new public IP for user {user}, but none left.")
+        pubip = self.free_public_ips.pop()
+        return pubip
+
     def find_differences(self):
 
         found = 0
@@ -344,12 +350,11 @@ class Hosts:
                     elif newuser in self.nat_conf_user2pubip_to_add:
                         newpubip = self.nat_conf_user2pubip_to_add[user]
                     else:
-                        if len(self.free_public_ips) == 0:
-                            raise ConfError(f"Need new public IP for local IP {ip} of user {newuser}), but none left.")
-                        newpubip = self.free_public_ips.pop()
+                        newpubip = self.get_new_public_ip(newuser)
                         self.nat_conf_user2pubip_to_add[newuser] = newpubip
                         
                     ipchange = f" and changing public IP {oldpubip} to {newpubip}"
+                    self.nat_conf_pubip_changes[ip] = (oldpubip, newpubip)
                 # TODO also count forwards? rename also in forwards lines?
                 logp(f"Renaming user {olduser} to {newuser} for IP {ip}{ipchange}")
 
@@ -363,16 +368,11 @@ class Hosts:
                 if user in self.user2ip and self.user2ip[user] in self.ip2pubip:
                     pubip = self.ip2pubip[self.user2ip[user]]
                     info = f"with existing user's public IP {pubip}"
-                elif user in self.user2pubip:
-                    pubip = self.user2pubip[user]
-                    info = f"with existing user's public IP {pubip}"
                 elif user in self.nat_conf_user2pubip_to_add:
                     pubip = self.nat_conf_user2pubip_to_add[user]
                     info = f"with pending new user's public IP {pubip}"
                 else:
-                    if len(self.free_public_ips) == 0:
-                        raise ConfError(f"Need new public IP for local IP {ip} (host {host} of user {user}), but none left.")
-                    pubip = self.free_public_ips.pop()
+                    pubip = self.get_new_public_ip(user)
                     self.nat_conf_user2pubip_to_add[user] = pubip
                     info = f"with new user's public IP {pubip}"
                     
