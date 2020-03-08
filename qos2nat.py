@@ -389,7 +389,7 @@ class Hosts:
                     info = f"with new user's public IP {pubip}"
                     
                 logp(f"User {user}: adding local IP {ip} (host {host}) {info}")
-                self.natConfIpsToAdd[pubip].add(ip)
+                self.nat_conf_pubip2ip_to_add[pubip].add(ip)
         return found
 
     def write_nat_up(self, nat_up):
