@@ -28,8 +28,12 @@ config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
 config_nat_backup = "/etc/nat_backup/nat_conf_"
 config_portmap = "/var/www/portmap.txt"
+
 config_dns_db = "libcice.db.new"
 config_dns_rev_db = "92.10.db.new"
+
+config_dev_lan="eno1"
+config_dev_wan="eno2"
 
 logfile = None
 
@@ -68,6 +72,7 @@ class Hosts:
 
     def __init__(self):
 
+
         # from qos.conf
         self.ip2host = dict()
         self.host2ip = dict()
@@ -76,6 +81,9 @@ class Hosts:
         self.user2shaping = dict()
         self.users = set()
 
+        self.last_classid = 2089
+        self.user2classid = dict()
+
         self.local_network = ip_network(config_local_network)
         self.all_public_ips = set()
         for net_str in config_public_networks:
@@ -83,6 +91,10 @@ class Hosts:
             self.all_public_ips.update(net.hosts())
 
         self.init_nat_conf()
+
+    def get_classid(self):
+        self.last_classid += 1
+        return self.last_classid
 
     def add_qos(self, ip, host, user, shaping = None):
         if ip in self.ip2host:
@@ -111,6 +123,7 @@ class Hosts:
                                    f"{self.user2shaping[user]} and {shaping}")
             self.user2shaping[user] = shaping
             self.user2ip[user] = ip
+            self.user2classid[user] = self.get_classid()
             
     def read_qos_conf(self, qosconf):
 
@@ -438,6 +451,42 @@ class Hosts:
             host = host.replace("_", "-")
             db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
 
+    def write_iptables_mangle(self, out):
+        out.write("*mangle\n")
+        out.write(":PREROUTING ACCEPT [0:0]\n")
+        out.write(":POSTROUTING ACCEPT [0:0]\n")
+        out.write(":INPUT ACCEPT [0:0]\n")
+        out.write(":OUTPUT ACCEPT [0:0]\n")
+        out.write(":FORWARD ACCEPT [0:0]\n")
+        # TODO config
+        out.write(f"-A FORWARD -d 10.0.0.0/8 -o {config_dev_wan} -j ACCEPT\n")
+        out.write(f"-A POSTROUTING -s 10.0.0.0/8 -o eno1 -j ACCEPT\n")
+
+        for (ip, user) in self.ip2user.items():
+            if user not in self.user2classid:
+                print (f"skip ip {ip} of user {user} due to no defined shaping")
+                continue
+            classid = self.user2classid[user]
+            post = f"-A POSTROUTING -d {ip} -o {config_dev_lan}"
+            forw = f"-A FORWARD -s {ip} -o {config_dev_wan}"
+            for match in (post, forw):
+                out.write(f"{match} -j CLASSIFY --set-class 1:{classid}\n")
+                out.write(f"{match} -j ACCEPT\n")
+
+        out.write(f"-A POSTROUTING -o {config_dev_lan} -j CLASSIFY --set-class 1:3\n")
+        out.write(f"-A POSTROUTING -o {config_dev_lan} -j ACCEPT\n")
+        out.write(f"-A FORWARD -o {config_dev_wan} -j CLASSIFY --set-class 1:3\n")
+        out.write(f"-A FORWARD -o {config_dev_wan} -j ACCEPT\n")
+        out.write("COMMIT\n")
+
+    def write_tc(self.out):
+        for dev in (config_dev_lan, config_dev_wan):
+            out.write(f"qdisc add dev {dev} root handle 1: htb r2q 5 default 1\n")
+            out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 1000Mbit ceil 1000Mbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 950000kbit ceil 950000kbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
+            
+
+
 hosts = Hosts()
 logfile = None
 
@@ -481,7 +530,7 @@ try:
     
     log(f"Start qos2nat.py {timestamp}")
 
-    logp("Reading {qos_conf_path} ...")
+    logp(f"Reading {qos_conf_path} ...")
     with open(qos_conf_path, 'r') as qosconf:
         hosts.read_qos_conf(qosconf)
 
@@ -541,6 +590,10 @@ try:
     else:
         logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
              f"remaining public IPs: {len(hosts.free_public_ips)}")
+
+    print("Writing mangle.up...")
+    with open("mangle.up", 'w') as mangle:
+        hosts.write_iptables_mangle(mangle)
 
 except ConfError as e:
     logp(e)
