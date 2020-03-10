@@ -159,10 +159,10 @@ class Hosts:
             if ip not in self.local_network:
                 raise ConfError(f"Error parsing qos.conf line {line_num}: IP {ip} not in local network {self.local_network}")
 
-            m = re.match(r"via-prometheus-([\S]+)", shaping)
+            m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
             if m:
                 user = host
-                shaping = m.group(1)
+                shaping = (int(m.group(1)), int(m.group(2)))
             else:
                 m = re.match(r"sharing-([\S]+)", shaping)
                 if not m:
@@ -479,13 +479,24 @@ class Hosts:
         out.write(f"-A FORWARD -o {config_dev_wan} -j ACCEPT\n")
         out.write("COMMIT\n")
 
-    def write_tc(self.out):
+    def write_tc_up(self, out):
         for dev in (config_dev_lan, config_dev_wan):
             out.write(f"qdisc add dev {dev} root handle 1: htb r2q 5 default 1\n")
             out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 1000Mbit ceil 1000Mbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
             out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 950000kbit ceil 950000kbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
-            
+            out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 950000kbit ceil 950000kbit burst 1300k cburst 1300k prio 1 quantum 20000\n")
 
+        for (user, shaping) in self.user2shaping.items():
+            (rate, ceil) = shaping
+            classid = self.user2classid[user]
+            for dev in (config_dev_lan, config_dev_wan):
+                out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate}kbit ceil {ceil}kbit burst 256k cburst 256k prio 1 quantum 1500\n")
+                out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
+
+        for dev in (config_dev_lan, config_dev_wan):
+            out.write(f"class add dev {dev} parent 1:1025 classid 1:3 htb rate 64kbit ceil 128kbit burst 256k cburst 256k prio 7 quantum 1500\n")
+            out.write(f"qdisc add dev {dev} parent 1:3 handle 3 fq_codel\n")
+            out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
 
 hosts = Hosts()
 logfile = None
@@ -594,6 +605,10 @@ try:
     print("Writing mangle.up...")
     with open("mangle.up", 'w') as mangle:
         hosts.write_iptables_mangle(mangle)
+
+    print("Writing tc.up...")
+    with open("tc.up", 'w') as mangle:
+        hosts.write_tc_up(mangle)
 
 except ConfError as e:
     logp(e)
