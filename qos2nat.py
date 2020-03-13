@@ -48,6 +48,30 @@ def logp(msg):
 class ConfError(RuntimeError):
     """Unexpected content in conf file"""
 
+def td(content):
+    return f"<td>{content}</td>"
+
+def tdr(content):
+    return f"<td align=\"right\">{content}</td>"
+
+def tr(tds):
+    content = ''.join(tds)
+    return f"<tr>{content}</tr>\n"
+
+def human(val):
+    if val < 1024:
+        return str(val)
+    val //= 1024
+
+    if val < 1024:
+        return f"{val} KB"
+
+    val //= 1024
+    if val < 1024:
+        return f"{val} MB"
+
+    return f"{val//1024} GB"
+
 class Hosts:
 
     def init_nat_conf(self):
@@ -80,6 +104,11 @@ class Hosts:
         self.user2ip = dict()
         self.user2shaping = dict()
         self.users = set()
+
+        # from iptables stats
+        self.ip2download = dict()
+        self.ip2upload = dict()
+        self.ip2traffic = defaultdict(int)
 
         self.last_classid = 2089
         self.user2classid = dict()
@@ -497,7 +526,67 @@ class Hosts:
             out.write(f"class add dev {dev} parent 1:1025 classid 1:3 htb rate 64kbit ceil 128kbit burst 256k cburst 256k prio 7 quantum 1500\n")
             out.write(f"qdisc add dev {dev} parent 1:3 handle 3 fq_codel\n")
             out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
+    
+    def read_iptables_stats(self, stats):
+        for line in stats:
+            line = line.strip()
+            #              12093312 16121305318        ACCEPT      all      --       *      eno1         0.0.0.0/0   10.92.1.209
+            m = re.match(r"([0-9]+)[ \t]+([0-9]+)[ \t]+ACCEPT[ \t]+all[ \t]+--[ \t]+\*[ \t]+([\S]+)[ \t]+([0-9./]+)[ \t]+([0-9./]+)", line)
+            if not m:
+                continue
 
+            (pkts, _bytes, dev, src_ip, tgt_ip) = m.groups()
+
+            down = True
+            if dev == config_dev_lan and src_ip == "0.0.0.0/0":
+                if tgt_ip == "0.0.0.0/0":
+                    continue
+                ip = ip_address(tgt_ip)
+                
+            elif dev == config_dev_wan and tgt_ip == "0.0.0.0/0":
+                if src_ip == "0.0.0.0/0":
+                    continue
+                ip = ip_address(src_ip)
+                down = False
+            else:
+                continue
+                
+            if ip not in self.local_network:
+                    continue
+
+            print (f"IP {ip} {'download' if down else 'upload'} {_bytes} bytes")
+            _bytes = int(_bytes)
+            self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
+            if down:
+                self.ip2download[ip] = _bytes
+            else:
+                self.ip2upload[ip] = _bytes
+
+    def write_day_html(self, html):
+        html.write("<table border>\n")
+        html.write("<tr><th colspan=11>Top Traffic Hosts</th></tr>\n")
+        html.write(tr((tdr("#"), td("hostname (user)"), td("ip"), tdr("total"), tdr("down"), tdr("up"))))
+        num = 0
+        for (ip, traffic) in sorted(self.ip2traffic.items(), key = lambda item: item[1], reverse=True):
+            num += 1
+            try:
+                host = self.ip2host[ip]
+            except KeyError:
+                host = "(unknown)"
+            try:
+                user = self.ip2user[ip]
+            except KeyError:
+                user = "(unknown)"
+            if host == user:
+                hostuser = host
+            else:
+                hostuser = f"{host} ({user})"
+            down = self.ip2download[ip]
+            up = self.ip2upload[ip]
+            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(ip), tdr(human(traffic)),\
+                           tdr(human(down)), tdr(human(up)))))
+        html.write("</table>\n")
+                
 hosts = Hosts()
 logfile = None
 
@@ -508,6 +597,7 @@ parser.add_argument("qos_conf", help=f"qos.conf location, default is {config_qos
                     nargs='?', default=f"{config_prefix}{config_qos_conf}")
 parser.add_argument("--devel", help=f"development run, prefix all paths with local directory, don't execute iptables",\
                     action="store_true")
+parser.add_argument("-p", action="store_true")
 args = parser.parse_args()
 
 if args.devel:
@@ -529,6 +619,25 @@ if args.dns:
         with open(config_dns_rev_db, 'w') as db:
             hosts.write_dns_reverse(db)
 
+        sys.exit(0)
+    except ConfError as e:
+        logp(e)
+        sys.exit(1)
+
+if args.p:
+    try:
+        print(f"Reading {qos_conf_path} ...")
+        with open(qos_conf_path, 'r') as qosconf:
+            hosts.read_qos_conf(qosconf)
+        
+        print(f"Reading iptables.stats ... ")
+        with open("iptables.stats", 'r') as stats:
+            hosts.read_iptables_stats(stats)
+
+        print(f"Writing preview.html ... ")
+        with open("preview.html", 'w') as html:
+            hosts.write_day_html(html)
+        
         sys.exit(0)
     except ConfError as e:
         logp(e)
