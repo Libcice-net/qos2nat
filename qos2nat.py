@@ -4,11 +4,13 @@
 import sys
 import re
 import shutil
-import os
 import string
 import argparse
+import subprocess
+import tempfile
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
+import time
 from datetime import datetime
 
 config_local_network = "10.92.0.0/16"
@@ -28,6 +30,10 @@ config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
 config_nat_backup = "/etc/nat_backup/nat_conf_"
 config_portmap = "/var/www/portmap.txt"
+
+config_html_preview = "/var/www/today.html"
+config_html_day = "/var/www/yesterday.html"
+config_logdir = "/var/www/logs/"
 
 config_dns_db = "libcice.db.new"
 config_dns_rev_db = "92.10.db.new"
@@ -554,7 +560,7 @@ class Hosts:
             if ip not in self.local_network:
                     continue
 
-            print (f"IP {ip} {'download' if down else 'upload'} {_bytes} bytes")
+            #print (f"IP {ip} {'download' if down else 'upload'} {_bytes} bytes")
             _bytes = int(_bytes)
             self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
             if down:
@@ -563,8 +569,9 @@ class Hosts:
                 self.ip2upload[ip] = _bytes
 
     def write_day_html(self, html):
+        timestamp = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
         html.write("<table border>\n")
-        html.write("<tr><th colspan=11>Top Traffic Hosts</th></tr>\n")
+        html.write(f"<tr><th colspan=11>Top Traffic Hosts ({timestamp})</th></tr>\n")
         html.write(tr((tdr("#"), td("hostname (user)"), td("ip"), tdr("total"), tdr("down"), tdr("up"))))
         num = 0
         for (ip, traffic) in sorted(self.ip2traffic.items(), key = lambda item: item[1], reverse=True):
@@ -586,6 +593,29 @@ class Hosts:
             html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(ip), tdr(human(traffic)),\
                            tdr(human(down)), tdr(human(up)))))
         html.write("</table>\n")
+
+    def write_host_logs(self):
+        now = int(time.time())
+        dt = datetime.fromtimestamp(now)
+        timestamp = dt.strftime("%a %b %d %H:%M:%S %Y")
+        for (ip, traffic) in self.ip2traffic.items():
+            if ip not in self.ip2host:
+                continue
+            host = self.ip2host[ip]
+            user = self.ip2user[ip]
+            down = self.ip2download[ip] // (1024*1024)
+            up = self.ip2upload[ip] // (1024*1024)
+            traffic = traffic // (1024*1024)
+            (rate, ceil) = self.user2shaping[user]
+            with open(f"{config_prefix}{config_logdir}/{host}.log", 'a') as log:
+                log.write(f"{now}\t{host}\t{traffic}\t{down}\t0\t{up}\t{rate}\t{ceil}\t{ceil}\t{timestamp}\n")
+
+def iptables_get_stats(statsfile):
+    if args.devel:
+        runargs = ["cat", "iptables.stats"]
+    else:
+        runargs = ["/usr/sbin/iptables", "-L", "-v", "-x", "-n", "-t", "mangle"]
+    ret = subprocess.run(runargs, stdout=statsfile, check=True)
                 
 hosts = Hosts()
 logfile = None
@@ -598,6 +628,7 @@ parser.add_argument("qos_conf", help=f"qos.conf location, default is {config_qos
 parser.add_argument("--devel", help=f"development run, prefix all paths with local directory, don't execute iptables",\
                     action="store_true")
 parser.add_argument("-p", action="store_true")
+parser.add_argument("-r", action="store_true")
 args = parser.parse_args()
 
 if args.devel:
@@ -626,18 +657,63 @@ if args.dns:
 
 if args.p:
     try:
-        print(f"Reading {qos_conf_path} ...")
-        with open(qos_conf_path, 'r') as qosconf:
-            hosts.read_qos_conf(qosconf)
-        
-        print(f"Reading iptables.stats ... ")
-        with open("iptables.stats", 'r') as stats:
-            hosts.read_iptables_stats(stats)
+        with tempfile.TemporaryDirectory() as tmpdir:
 
-        print(f"Writing preview.html ... ")
-        with open("preview.html", 'w') as html:
-            hosts.write_day_html(html)
+            print(f"Reading {qos_conf_path} ...")
+            with open(qos_conf_path, 'r') as qosconf:
+                hosts.read_qos_conf(qosconf)
+
+            print("Getting iptables stats")
+            with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+                iptables_get_stats(stats)
         
+            print(f"Reading iptables.stats ... ")
+            with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
+                hosts.read_iptables_stats(stats)
+
+            print(f"Writing {config_html_preview} ... ")
+            with open(f"{config_prefix}{config_html_preview}", 'w') as html:
+                hosts.write_day_html(html)
+            
+        sys.exit(0)
+    except ConfError as e:
+        logp(e)
+        sys.exit(1)
+
+if args.r:
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+ 
+            print(f"Reading {qos_conf_path} ...")
+            with open(qos_conf_path, 'r') as qosconf:
+                hosts.read_qos_conf(qosconf)
+
+            print("Getting iptables stats")
+            with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+                iptables_get_stats(stats)
+            
+            print(f"Reading iptables.stats ... ")
+            with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
+                hosts.read_iptables_stats(stats)
+
+            print(f"Writing {config_html_day} ... ")
+            with open(f"{config_prefix}{config_html_day}", 'w') as html:
+                hosts.write_day_html(html)
+            
+            print(f"Writing host logs ... ")
+            hosts.write_host_logs()
+
+            if args.devel:
+                tmpdir = "."
+
+            print("Writing iptables.mangle.new...")
+            with open(f"{tmpdir}/iptables.mangle.new", 'w') as mangle:
+                hosts.write_iptables_mangle(mangle)
+
+            print("Writing tc.new...")
+            with open(f"{tmpdir}/tc.new", 'w') as mangle:
+                hosts.write_tc_up(mangle)
+
         sys.exit(0)
     except ConfError as e:
         logp(e)
@@ -700,7 +776,7 @@ try:
 
     if not args.devel:
         logp("Loading new nat.up to iptables")
-        ret = os.system(f"/usr/sbin/iptables-restore {nat_up_name}")
+        subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
     else:
         logp("Skipping iptables-restore due to --devel")
         ret = 0
@@ -710,14 +786,6 @@ try:
     else:
         logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
              f"remaining public IPs: {len(hosts.free_public_ips)}")
-
-    print("Writing mangle.up...")
-    with open("mangle.up", 'w') as mangle:
-        hosts.write_iptables_mangle(mangle)
-
-    print("Writing tc.up...")
-    with open("tc.up", 'w') as mangle:
-        hosts.write_tc_up(mangle)
 
 except ConfError as e:
     logp(e)
