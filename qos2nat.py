@@ -627,6 +627,8 @@ parser.add_argument("qos_conf", help=f"qos.conf location, default is {config_qos
                     nargs='?', default=f"{config_prefix}{config_qos_conf}")
 parser.add_argument("--devel", help=f"development run, prefix all paths with local directory, don't execute iptables",\
                     action="store_true")
+parser.add_argument("--dry-run", help=f"dry run on real system, don't actually replace nat.conf or run iptables and tc",\
+                    action="store_true")
 parser.add_argument("-p", action="store_true")
 parser.add_argument("-r", action="store_true")
 args = parser.parse_args()
@@ -671,8 +673,13 @@ if args.p:
             with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
                 hosts.read_iptables_stats(stats)
 
-            print(f"Writing {config_html_preview} ... ")
-            with open(f"{config_prefix}{config_html_preview}", 'w') as html:
+            if args.dry_run:
+                print(f"Writing /tmp/preview.html instead of {config_html_preview} due to --dry-run ... ")
+                preview_name = "/tmp/preview.html"
+            else:
+                print(f"Writing {config_html_preview} ... ")
+                preview_name = f"{config_prefix}{config_html_preview}"
+            with open(preview_name, 'w') as html:
                 hosts.write_day_html(html)
             
         sys.exit(0)
@@ -696,23 +703,50 @@ if args.r:
             with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
                 hosts.read_iptables_stats(stats)
 
-            print(f"Writing {config_html_day} ... ")
-            with open(f"{config_prefix}{config_html_day}", 'w') as html:
-                hosts.write_day_html(html)
+            if not args.dry_run:
+                print(f"Writing {config_html_day} ... ")
+                with open(f"{config_prefix}{config_html_day}", 'w') as html:
+                    hosts.write_day_html(html)
             
-            print(f"Writing host logs ... ")
-            hosts.write_host_logs()
+                print(f"Writing host logs ... ")
+                hosts.write_host_logs()
+
+            else:
+                print(f"Skipped writing {config_html_day} and host logs due to dry run")
 
             if args.devel:
                 tmpdir = "."
 
-            print("Writing iptables.mangle.new...")
-            with open(f"{tmpdir}/iptables.mangle.new", 'w') as mangle:
+            mangle_new = f"{tmpdir}/iptables.mangle.new"
+            print("Writing iptables.mangle.new ...")
+            with open(mangle_new, 'w') as mangle:
                 hosts.write_iptables_mangle(mangle)
 
+            tc_new = f"{tmpdir}/tc.new"
             print("Writing tc.new...")
-            with open(f"{tmpdir}/tc.new", 'w') as mangle:
-                hosts.write_tc_up(mangle)
+            with open(tc_new, 'w') as tc_file:
+                hosts.write_tc_up(tc_file)
+
+            if not args.devel:
+                if not args.dry_run:
+                    print("Flushing old tc rules ...")
+                    for dev in [config_dev_lan, config_dev_wan]:
+                        subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"], check=True)
+                else:
+                    print("Not flushing old tc rules due to dry run.")
+
+                if args.dry_run:
+                    print("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
+                else:
+                    print("Loading iptables.mangle.new via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
+                
+                if args.dry_run:
+                    print("Not loading tc.new due to dry run")
+                else:
+                    print("Loading tc.new via tc -b ...")
+                    subprocess.run(["/usr/sbin/tc", "-b", tc_new], check=True)
 
         sys.exit(0)
     except ConfError as e:
@@ -756,27 +790,43 @@ try:
         if diffs > 0:
             logp(f"Found {diffs} more unexpected updates, aborting.")
             sys.exit(1)
+        elif args.dry_run:
+            logp(f"No differences, not replacing nat.conf due to --dry-run")
         else:
             logp(f"No differences, replacing nat.conf with {nat_conf_post}")
             shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
     else:
         logp("No updates needed")
 
-    logp("Generating nat.up...")
-    nat_up_name = f"{config_prefix}{config_nat_up}"
+    if args.dry_run:
+        logp(f"Generating /tmp/nat.up instead of {config_prefix}{config_nat_up} due to --dry-run")
+        nat_up_name = "/tmp/nat.up"
+    else:
+        logp("Generating nat.up...")
+        nat_up_name = f"{config_prefix}{config_nat_up}"
     with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
         nat_up.write("# generated by qos2nat.py\n")
         for line in nat_global:
             nat_up.write(line)
         hosts.write_nat_up(nat_up)
 
-    logp("Generating portmap.txt...")
-    with open(f"{config_prefix}{config_portmap}", 'w') as portmap:
+    if args.dry_run:
+        logp(f"Generating /tmp/portmap.txt instead of {config_prefix}{config_portmap} due to --dry-run")
+        portmap_name = "/tmp/portmap.txt"
+    else:
+        logp("Generating portmap.txt...")
+        portmap_name = f"{config_prefix}{config_portmap}"
+    with open(portmap_name, 'w') as portmap:
         hosts.write_portmap(portmap)
 
     if not args.devel:
-        logp("Loading new nat.up to iptables")
-        subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
+        if args.dry_run:
+            print("Testing (no commit) nat.up via iptables-restore ... ")
+            subprocess.run(["/usr/sbin/iptables-restore", "-t", nat_up_name], check=True)
+        else:
+            logp("Loading new nat.up to iptables")
+            subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
+        ret = 0
     else:
         logp("Skipping iptables-restore due to --devel")
         ret = 0
