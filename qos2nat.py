@@ -486,6 +486,41 @@ class Hosts:
             host = host.replace("_", "-")
             db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
 
+    def write_nft_mangle(self, out):
+        out.write("flush table ip mangle\n")
+        out.write("add table ip mangle\n")
+
+        out.write("add map ip mangle forw_map { type ipv4_addr : verdict; }\n")
+        out.write("add map ip mangle post_map { type ipv4_addr : verdict; }\n")
+
+        for (ip, user) in self.ip2user.items():
+            if user not in self.user2classid:
+                print (f"skip ip {ip} of user {user} due to no defined shaping")
+                continue
+            classid = self.user2classid[user]
+           
+            ipstr = str(ip).replace(".", "_")
+            for prefix in ("post", "forw"):
+                out.write(f"add chain ip mangle {prefix}_{ipstr}\n")
+                out.write(f"add rule ip mangle {prefix}_{ipstr} counter packets 0 bytes 0 meta priority set 1:{classid} accept\n")
+                out.write(f"add element ip mangle {prefix}_map {{ {ip} : goto {prefix}_{ipstr} }}\n")
+            
+        out.write("add chain ip mangle forw_common\n")
+        out.write("add rule ip mangle forw_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
+        
+        out.write("add chain ip mangle post_common\n")
+        out.write("add rule ip mangle post_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
+        out.write("add chain ip mangle forward { type filter hook forward priority -150; policy accept; }\n")
+        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" ip daddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" ip saddr vmap @forw_map\n")
+        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" counter packets 0 bytes 0 jump forw_common\n")
+
+        out.write("add chain ip mangle postrouting { type filter hook postrouting priority -150; policy accept; }\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" ip saddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" ip daddr vmap @post_map\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" counter packets 0 bytes 0 jump post_common\n")
+
+
     def write_iptables_mangle(self, out):
         out.write("*mangle\n")
         out.write(":PREROUTING ACCEPT [0:0]\n")
@@ -629,6 +664,7 @@ parser.add_argument("--devel", help=f"development run, prefix all paths with loc
                     action="store_true")
 parser.add_argument("--dry-run", help=f"dry run on real system, don't actually replace nat.conf or run iptables and tc",\
                     action="store_true")
+parser.add_argument("--nft", action="store_true")
 parser.add_argument("-p", action="store_true")
 parser.add_argument("-r", action="store_true")
 args = parser.parse_args()
@@ -721,6 +757,11 @@ if args.r:
             print("Writing iptables.mangle.new ...")
             with open(mangle_new, 'w') as mangle:
                 hosts.write_iptables_mangle(mangle)
+      
+            nft_mangle_new = f"/tmp/nft.mangle.new"
+            print("Writing nft.mangle.new ...")
+            with open(nft_mangle_new, 'w') as mangle:
+                hosts.write_nft_mangle(mangle)
 
             tc_new = f"{tmpdir}/tc.new"
             print("Writing tc.new...")
@@ -735,12 +776,20 @@ if args.r:
                 else:
                     print("Not flushing old tc rules due to dry run.")
 
-                if args.dry_run:
-                    print("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
-                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
-                else:
-                    print("Loading iptables.mangle.new via iptables-restore ... ")
-                    subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
+                if args.nft:
+                    if args.dry_run:
+                        print("Testing (no commit) nft.mangle.new via nft -c ... ")
+                        subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
+                    else:
+                        print("Loading nft.mangle.new via nft ... ")
+                        subprocess.run(["/usr/sbin/nft", "-f", nft_mangle_new], check=True)
+                else: 
+                    if args.dry_run:
+                        print("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
+                        subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
+                    else:
+                        print("Loading iptables.mangle.new via iptables-restore ... ")
+                        subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
                 
                 if args.dry_run:
                     print("Not loading tc.new due to dry run")
