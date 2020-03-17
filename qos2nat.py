@@ -447,8 +447,10 @@ class Hosts:
 
         localnet = self.local_network
 
+        nat_up.write("add map ip nat snat_map { type ipv4_addr : ipv4_addr; }\n")
+
         for (ip, pubip) in self.ip2pubip.items():
-            nat_up.write(f"add rule ip nat POSTROUTING ip saddr {ip} ip daddr != {localnet} snat to {pubip} \n")
+            nat_up.write(f"add element ip nat snat_map {{ {ip} : {pubip} }}\n")
 
             if not ip in self.ip2portfwd:
                 continue
@@ -458,6 +460,8 @@ class Hosts:
                     nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} {proto} dport {pub_port} "
                                  f"dnat to {ip}:{loc_port}\n")
     
+        nat_up.write(f"add rule ip nat POSTROUTING ip daddr != {localnet} snat ip saddr map @snat_map\n")
+
     def write_nat_up(self, nat_up):
 
         localnet = self.local_network.with_netmask
@@ -902,7 +906,7 @@ try:
                 print("Testing (no commit) nat.up.nft via nft -t ... ")
                 subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
             else:
-                logp("Loading new nat.up.nfti")
+                logp("Loading new nat.up.nft")
                 subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
             ret = 0
         else:
