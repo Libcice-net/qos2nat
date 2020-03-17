@@ -587,10 +587,43 @@ class Hosts:
             out.write(f"qdisc add dev {dev} parent 1:3 handle 3 fq_codel\n")
             out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
     
+    def read_nft_stats(self, stats):
+        for line in stats:
+            line = line.strip()
+
+            #oifname "eno1" ip daddr 10.92.28.16 counter packets 3236597 bytes 4399439265 meta priority set 1:2550
+            #oifname "eno2" ip saddr 10.92.28.16 counter packets 965132 bytes 104370410 meta priority set 1:2550
+
+            m = re.match(r"oifname \"([^\"]+)\" ip ([ds]addr) ([0-9.]+) counter packets ([0-9]+) bytes ([0-9]+) meta priority set 1:([0-9]+)", line)
+            if not m:
+                continue
+
+            (dev, sdaddr, ip, packets, _bytes, classid) = m.groups()
+
+            if dev == config_dev_lan and sdaddr == "daddr":
+                down = True
+            elif dev == config_dev_wan and sdaddr == "saddr":
+                down = False
+            else:
+                continue 
+
+            ip = ip_address(ip)
+            if ip not in self.local_network:
+                continue
+            
+            _bytes = int(_bytes)
+            self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
+            if down:
+                self.ip2download[ip] = _bytes
+            else:
+                self.ip2upload[ip] = _bytes
+            if ip in self.ip2user:
+                user = self.ip2user[ip]
+                self.user2classid[user] = int(classid)
+            
     def read_iptables_stats(self, stats):
         for line in stats:
             line = line.strip()
-            #              12093312 16121305318        ACCEPT      all      --       *      eno1         0.0.0.0/0   10.92.1.209
             m = re.match(r"([0-9]+)[ \t]+([0-9]+)[ \t]+ACCEPT[ \t]+all[ \t]+--[ \t]+\*[ \t]+([\S]+)[ \t]+([0-9./]+)[ \t]+([0-9./]+)", line)
             if not m:
                 continue
@@ -671,6 +704,13 @@ def iptables_get_stats(statsfile):
         runargs = ["/usr/sbin/iptables", "-L", "-v", "-x", "-n", "-t", "mangle"]
     ret = subprocess.run(runargs, stdout=statsfile, check=True)
                 
+def nft_get_stats(statsfile):
+    if args.devel:
+        runargs = ["cat", "nft.stats"]
+    else:
+        runargs = ["/usr/sbin/nft", "list", "table", "mangle"]
+    ret = subprocess.run(runargs, stdout=statsfile, check=True)
+                
 hosts = Hosts()
 logfile = None
 
@@ -720,13 +760,22 @@ if args.p:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            print("Getting iptables stats")
-            with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
-                iptables_get_stats(stats)
-        
-            print(f"Reading iptables.stats ... ")
-            with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
-                hosts.read_iptables_stats(stats)
+            if args.nft:
+                print("Getting nft mangle stats")
+                with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
+                    nft_get_stats(stats)
+            
+                print(f"Reading nft mangle stats ... ")
+                with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
+                    hosts.read_nft_stats(stats)
+            else:
+                print("Getting iptables stats")
+                with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+                    iptables_get_stats(stats)
+            
+                print(f"Reading iptables.stats ... ")
+                with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
+                    hosts.read_iptables_stats(stats)
 
             if args.dry_run:
                 print(f"Writing /tmp/preview.html instead of {config_html_preview} due to --dry-run ... ")
@@ -750,13 +799,22 @@ if args.r:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            print("Getting iptables stats")
-            with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
-                iptables_get_stats(stats)
+            if args.nft:
+                print("Getting nft mangle stats")
+                with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
+                    nft_get_stats(stats)
             
-            print(f"Reading iptables.stats ... ")
-            with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
-                hosts.read_iptables_stats(stats)
+                print(f"Reading nft mangle stats ... ")
+                with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
+                    hosts.read_nft_stats(stats)
+            else:
+                print("Getting iptables stats")
+                with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+                    iptables_get_stats(stats)
+            
+                print(f"Reading iptables.stats ... ")
+                with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
+                    hosts.read_iptables_stats(stats)
 
             if not args.dry_run:
                 print(f"Writing {config_html_day} ... ")
