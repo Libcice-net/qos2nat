@@ -588,24 +588,58 @@ class Hosts:
             out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
     
     def read_nft_stats(self, stats):
+        table_based = None
+        down = None
+        table_in_chain = False
         for line in stats:
             line = line.strip()
 
-            #oifname "eno1" ip daddr 10.92.28.16 counter packets 3236597 bytes 4399439265 meta priority set 1:2550
-            #oifname "eno2" ip saddr 10.92.28.16 counter packets 965132 bytes 104370410 meta priority set 1:2550
-
-            m = re.match(r"oifname \"([^\"]+)\" ip ([ds]addr) ([0-9.]+) counter packets ([0-9]+) bytes ([0-9]+) meta priority set 1:([0-9]+)", line)
-            if not m:
+            if table_based is None:
+                m = re.match(r"map forw_map {", line)
+                if m:
+                    table_based = True
+                    continue
+                m = re.match(r"chain PREROUTING {", line)
+                if m:
+                    table_based = False
+                    continue
                 continue
 
-            (dev, sdaddr, ip, packets, _bytes, classid) = m.groups()
+            if not table_based:
+                m = re.match(r"oifname \"([^\"]+)\" ip ([ds]addr) ([0-9.]+) counter packets ([0-9]+) bytes ([0-9]+) meta priority set 1:([0-9]+)", line)
+                if not m:
+                    continue
 
-            if dev == config_dev_lan and sdaddr == "daddr":
-                down = True
-            elif dev == config_dev_wan and sdaddr == "saddr":
-                down = False
+                (dev, sdaddr, ip, packets, _bytes, classid) = m.groups()
+
+                if dev == config_dev_lan and sdaddr == "daddr":
+                    down = True
+                elif dev == config_dev_wan and sdaddr == "saddr":
+                    down = False
+                else:
+                    continue 
+
             else:
-                continue 
+                if table_in_chain:
+                    m = re.match(f"counter packets ([0-9]+) bytes ([0-9]+) meta priority set 1:([0-9]+)", line)
+                    if not m:
+                        raise ConfError(f"Unexpected content of chain for {ip} down {down}: {line}")
+                    (packets, _bytes, classid) = m.groups()
+                    table_in_chain = False
+                else:
+                    m = re.match(r"chain (post|forw)_([0-9]+)_([0-9]+)_([0-9]+)_([0-9]+) {", line)
+                    
+                    if not m:
+                        continue
+
+                    (_type, ip1, ip2, ip3, ip4) = m.groups()
+                    if _type == "post":
+                        down = True
+                    else:
+                        down = False
+                    ip = f"{ip1}.{ip2}.{ip3}.{ip4}"
+                    table_in_chain = True
+                    continue
 
             ip = ip_address(ip)
             if ip not in self.local_network:
@@ -620,6 +654,9 @@ class Hosts:
             if ip in self.ip2user:
                 user = self.ip2user[ip]
                 self.user2classid[user] = int(classid)
+
+        if table_based is None:
+            raise ConfError("Content of nft list table mangle not recognized")
             
     def read_iptables_stats(self, stats):
         for line in stats:
