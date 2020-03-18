@@ -94,6 +94,7 @@ class Hosts:
         self.nat_conf_ips_to_delete = set()
         self.nat_conf_user2pubip_to_add = dict() # user -> pubip
         self.nat_conf_pubip2ip_to_add = defaultdict(set) # pubip -> ip
+        self.nat_conf_pubip_already_added = set()
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
         self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
@@ -319,7 +320,7 @@ class Hosts:
                 # next to existing line
                 new_user = self.ip2user[new_ip]
                 natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
-            del (self.nat_conf_pubip2ip_to_add[pubip])
+            self.nat_conf_pubip_already_added.add(pubip)
  
         natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
         
@@ -374,6 +375,8 @@ class Hosts:
         self.read_nat_conf(natconf_old, natconf_new)
 
         for (pubip, list_ip) in self.nat_conf_pubip2ip_to_add.items():
+            if pubip in self.nat_conf_pubip_already_added:
+                continue
             for ip in list_ip:
                 user = self.ip2user[ip]
                 natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
