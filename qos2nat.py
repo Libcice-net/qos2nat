@@ -131,6 +131,16 @@ class Hosts:
         self.last_classid += 1
         return self.last_classid
 
+    def get_user_classid(self, user):
+        if user not in self.user2classid:
+            self.user2classid[user] = self.get_classid()
+        return self.user2classid[user]
+    
+    def set_user_classid(self, user, classid):
+        self.user2classid[user] = classid
+        if classid > self.last_classid:
+            self.last_classid = classid
+
     def add_qos(self, ip, host, user, shaping = None):
         if ip in self.ip2host:
             host_other = self.ip2host[ip]
@@ -513,10 +523,10 @@ class Hosts:
         out.write("add map ip mangle post_map { type ipv4_addr : verdict; }\n")
 
         for (ip, user) in self.ip2user.items():
-            if user not in self.user2classid:
+            if user not in self.user2shaping:
                 print (f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
-            classid = self.user2classid[user]
+            classid = self.get_user_classid(user)
            
             ipstr = str(ip).replace(".", "_")
             for prefix in ("post", "forw"):
@@ -552,10 +562,10 @@ class Hosts:
         out.write(f"-A POSTROUTING -s 10.0.0.0/8 -o eno1 -j ACCEPT\n")
 
         for (ip, user) in self.ip2user.items():
-            if user not in self.user2classid:
+            if user not in self.user2shaping:
                 print (f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
-            classid = self.user2classid[user]
+            classid = self.get_user_classid(user)
             post = f"-A POSTROUTING -d {ip} -o {config_dev_lan}"
             forw = f"-A FORWARD -s {ip} -o {config_dev_wan}"
             for match in (post, forw):
@@ -577,7 +587,7 @@ class Hosts:
 
         for (user, shaping) in self.user2shaping.items():
             (rate, ceil) = shaping
-            classid = self.user2classid[user]
+            classid = self.get_user_classid(user)
             for dev in (config_dev_lan, config_dev_wan):
                 out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate}kbit ceil {ceil}kbit burst 256k cburst 256k prio 1 quantum 1500\n")
                 out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
@@ -653,7 +663,7 @@ class Hosts:
                 self.ip2upload[ip] = _bytes
             if ip in self.ip2user:
                 user = self.ip2user[ip]
-                self.user2classid[user] = int(classid)
+                self.set_user_classid(user, int(classid))
 
         if table_based is None:
             raise ConfError("Content of nft list table mangle not recognized")
@@ -752,17 +762,20 @@ hosts = Hosts()
 logfile = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--dns", help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat",\
-                    action="store_true")
-parser.add_argument("qos_conf", help=f"qos.conf location, default is {config_qos_conf}",\
-                    nargs='?', default=f"{config_prefix}{config_qos_conf}")
-parser.add_argument("--devel", help=f"development run, prefix all paths with local directory, don't execute iptables",\
-                    action="store_true")
-parser.add_argument("--dry-run", help=f"dry run on real system, don't actually replace nat.conf or run iptables and tc",\
-                    action="store_true")
-parser.add_argument("--nft", action="store_true")
-parser.add_argument("-p", action="store_true")
-parser.add_argument("-r", action="store_true")
+parser.add_argument("--dns", action="store_true",\
+                    help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat")
+parser.add_argument("qos_conf", nargs='?', default=f"{config_prefix}{config_qos_conf}",\
+                    help=f"qos.conf location, default is {config_qos_conf}")
+parser.add_argument("--devel", action="store_true",\
+                    help="development run, prefix all paths with local directory, don't execute iptables")
+parser.add_argument("--dry-run", action="store_true",\
+                    help="dry run on real system, don't actually replace nat.conf or run iptables and tc")
+parser.add_argument("--iptables", action="store_true",
+                    help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
+parser.add_argument("-p", action="store_true",\
+                    help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
+parser.add_argument("-r", action="store_true",\
+                    help="regenerate all traffic shaping rules in kernel")
 args = parser.parse_args()
 
 if args.devel:
@@ -797,7 +810,7 @@ if args.p:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            if args.nft:
+            if not args.iptables:
                 print("Getting nft mangle stats")
                 with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
                     nft_get_stats(stats)
@@ -836,7 +849,8 @@ if args.r:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            if args.nft:
+            if not args.iptables:
+
                 print("Getting nft mangle stats")
                 with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
                     nft_get_stats(stats)
@@ -890,7 +904,7 @@ if args.r:
                 else:
                     print("Not flushing old tc rules due to dry run.")
 
-                if args.nft:
+                if args.iptables:
                     if args.dry_run:
                         print("Testing (no commit) nft.mangle.new via nft -c ... ")
                         subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
@@ -973,7 +987,7 @@ try:
             nat_up.write(line)
         hosts.write_nat_up(nat_up)
 
-    if args.nft:
+    if not args.iptables:
         if args.dry_run:
             logp(f"Generating /tmp/nat.up.nft instead of {config_prefix}{config_nat_up}.nft due to --dry-run")
             nat_up_nft_name = "/tmp/nat.up.nft"
@@ -996,7 +1010,7 @@ try:
         hosts.write_portmap(portmap)
 
     if not args.devel:
-        if args.nft:
+        if not args.iptables:
             if args.dry_run:
                 print("Testing (no commit) nat.up.nft via nft -t ... ")
                 subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
