@@ -817,7 +817,7 @@ def reload_shaping(tmpdir, reset_stats):
             hosts.write_tc_up(tc_file)
 
         if not args.devel:
-            if args.iptables:
+            if not args.iptables:
                 if args.dry_run:
                     logp("Testing (no commit) nft.mangle.new via nft -c ... ")
                     subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
