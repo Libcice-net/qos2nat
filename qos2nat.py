@@ -799,6 +799,8 @@ def get_mangle_stats(tmpdir):
 def reload_shaping(tmpdir, reset_stats):
         if args.devel:
             tmpdir = "."
+        elif args.dry_run:
+            tmpdir = "/tmp"
 
         if args.iptables:
             mangle_new = f"{tmpdir}/iptables.mangle.new"
