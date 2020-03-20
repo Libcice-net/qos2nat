@@ -990,9 +990,10 @@ try:
             logp(f"No differences, replacing nat.conf with {nat_conf_post}")
             shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
     else:
-        if not args.p:
+        if not args.f:
             logp("No updates needed, exiting. Re-run with -f to force updating nat and traffic shaping.")
-            logp("This is needed for new port forwards or bandwidth changes, which are currently not detected automatically")
+            logp("(run with -f is needed for new port forwards or bandwidth changes, which are currently not detected automatically)")
+            sys.exit(0) 
         else:
             logp("No needed updates detected but continuing due to -f parameter.")
 
