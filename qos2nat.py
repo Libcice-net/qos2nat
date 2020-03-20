@@ -114,6 +114,8 @@ class Hosts:
         # from iptables stats
         self.ip2download = dict()
         self.ip2upload = dict()
+        self.ip2download_packets = dict()
+        self.ip2upload_packets = dict()
         self.ip2traffic = defaultdict(int)
 
         self.last_classid = 2089
@@ -517,7 +519,7 @@ class Hosts:
             host = host.replace("_", "-")
             db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
 
-    def write_nft_mangle(self, out):
+    def write_nft_mangle(self, out, reset_stats):
         out.write("flush table ip mangle\n")
         out.write("add table ip mangle\n")
 
@@ -532,8 +534,18 @@ class Hosts:
            
             ipstr = str(ip).replace(".", "_")
             for prefix in ("post", "forw"):
+                _bytes = 0
+                packets = 0
+                if not reset_stats:
+                    if prefix == "post" and ip in self.ip2download:
+                        _bytes = self.ip2download[ip]
+                        packets = self.ip2download_packets[ip]
+                    elif ip in self.ip2upload:
+                        _bytes = self.ip2upload[ip]
+                        packets = self.ip2upload_packets[ip]
+                        
                 out.write(f"add chain ip mangle {prefix}_{ipstr}\n")
-                out.write(f"add rule ip mangle {prefix}_{ipstr} counter packets 0 bytes 0 meta priority set 1:{classid} accept\n")
+                out.write(f"add rule ip mangle {prefix}_{ipstr} counter packets {packets} bytes {_bytes} meta priority set 1:{classid} accept\n")
                 out.write(f"add element ip mangle {prefix}_map {{ {ip} : goto {prefix}_{ipstr} }}\n")
             
         out.write("add chain ip mangle forw_common\n")
@@ -659,10 +671,13 @@ class Hosts:
             
             _bytes = int(_bytes)
             self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
+            packets = int(packets)
             if down:
                 self.ip2download[ip] = _bytes
+                self.ip2download_packets[ip] = packets
             else:
                 self.ip2upload[ip] = _bytes
+                self.ip2upload_packets[ip] = packets
             if ip in self.ip2user:
                 user = self.ip2user[ip]
                 self.set_user_classid(user, int(classid))
@@ -673,11 +688,11 @@ class Hosts:
     def read_iptables_stats(self, stats):
         for line in stats:
             line = line.strip()
-            m = re.match(r"([0-9]+)[ \t]+([0-9]+)[ \t]+ACCEPT[ \t]+all[ \t]+--[ \t]+\*[ \t]+([\S]+)[ \t]+([0-9./]+)[ \t]+([0-9./]+)", line)
+            m = re.match(r"([0-9]+)[ \t]+([0-9]+)[ \t]+CLASSIFY[ \t]+all[ \t]+--[ \t]+\*[ \t]+([\S]+)[ \t]+([0-9./]+)[ \t]+([0-9./]+)[ \t]+CLASSIFY set 1:([0-9]+)", line)
             if not m:
                 continue
 
-            (pkts, _bytes, dev, src_ip, tgt_ip) = m.groups()
+            (pkts, _bytes, dev, src_ip, tgt_ip, classid) = m.groups()
 
             down = True
             if dev == config_dev_lan and src_ip == "0.0.0.0/0":
@@ -703,6 +718,9 @@ class Hosts:
                 self.ip2download[ip] = _bytes
             else:
                 self.ip2upload[ip] = _bytes
+            if ip in self.ip2user:
+                user = self.ip2user[ip]
+                self.set_user_classid(user, int(classid))
 
     def write_day_html(self, html):
         timestamp = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
@@ -759,25 +777,96 @@ def nft_get_stats(statsfile):
     else:
         runargs = ["/usr/sbin/nft", "list", "table", "mangle"]
     ret = subprocess.run(runargs, stdout=statsfile, check=True)
+
+def get_mangle_stats(tmpdir):
+    if not args.iptables:
+        logp("Getting nft mangle stats")
+        with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
+            nft_get_stats(stats)
+    
+        logp(f"Reading nft mangle stats ... ")
+        with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
+            hosts.read_nft_stats(stats)
+    else:
+        logp("Getting iptables stats")
+        with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+            iptables_get_stats(stats)
+    
+        logp(f"Reading iptables.stats ... ")
+        with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
+            hosts.read_iptables_stats(stats)
+
+def reload_shaping(tmpdir, reset_stats):
+        if args.devel:
+            tmpdir = "."
+
+        if args.iptables:
+            mangle_new = f"{tmpdir}/iptables.mangle.new"
+            logp("Writing iptables.mangle.new ...")
+            with open(mangle_new, 'w') as mangle:
+                hosts.write_iptables_mangle(mangle)
+        else: 
+            nft_mangle_new = f"{tmpdir}/nft.mangle.new"
+            logp("Writing nft.mangle.new ...")
+            with open(nft_mangle_new, 'w') as mangle:
+                hosts.write_nft_mangle(mangle, reset_stats)
+
+        tc_new = f"{tmpdir}/tc.new"
+        logp("Writing tc.new...")
+        with open(tc_new, 'w') as tc_file:
+            hosts.write_tc_up(tc_file)
+
+        if not args.devel:
+            if args.iptables:
+                if args.dry_run:
+                    logp("Testing (no commit) nft.mangle.new via nft -c ... ")
+                    subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
+                else:
+                    logp("Loading nft.mangle.new via nft ... ")
+                    subprocess.run(["/usr/sbin/nft", "-f", nft_mangle_new], check=True)
+            else: 
+                if args.dry_run:
+                    logp("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
+                else:
+                    logp("Loading iptables.mangle.new via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
+            
+            if not args.dry_run:
+                logp("Flushing old tc rules ...")
+                for dev in [config_dev_lan, config_dev_wan]:
+                    subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"], check=True)
+            else:
+                logp("Not flushing old tc rules due to dry run.")
+
+            if args.dry_run:
+                logp("Not loading tc.new due to dry run")
+            else:
+                logp("Loading tc.new via tc -b ...")
+                subprocess.run(["/usr/sbin/tc", "-b", tc_new], check=True)
+        else:
+            logp("Not loading mangle and tc due to --devel")
                 
 hosts = Hosts()
 logfile = None
 
 parser = argparse.ArgumentParser()
-parser.add_argument("qos_conf", nargs='?', default=f"{config_prefix}{config_qos_conf}",\
+parser.add_argument("qos_conf", nargs='?', default=f"{config_prefix}{config_qos_conf}",
                     help=f"qos.conf location, default is {config_qos_conf}")
-parser.add_argument("--dns", action="store_true",\
+parser.add_argument("--dns", action="store_true",
                     help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat")
-parser.add_argument("--devel", action="store_true",\
+parser.add_argument("--devel", action="store_true",
                     help="development run, prefix all paths with local directory, don't execute iptables")
-parser.add_argument("--dry-run", action="store_true",\
+parser.add_argument("--dry-run", action="store_true",
                     help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
+parser.add_argument("-f", action="store_true",
+                    help="force regenerate and reload nat and shaping even if no changes were detected")
 parser.add_argument("--iptables", action="store_true",
                     help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
-parser.add_argument("-p", action="store_true",\
+parser.add_argument("-p", action="store_true",
                     help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
-parser.add_argument("-r", action="store_true",\
-                    help="regenerate all traffic shaping rules in kernel")
+parser.add_argument("-r", action="store_true",
+                    help="generate yesterday.html and reset packet stats in kernel tables")
 args = parser.parse_args()
 
 if args.devel:
@@ -812,22 +901,7 @@ if args.p:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            if not args.iptables:
-                print("Getting nft mangle stats")
-                with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
-                    nft_get_stats(stats)
-            
-                print(f"Reading nft mangle stats ... ")
-                with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
-                    hosts.read_nft_stats(stats)
-            else:
-                print("Getting iptables stats")
-                with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
-                    iptables_get_stats(stats)
-            
-                print(f"Reading iptables.stats ... ")
-                with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
-                    hosts.read_iptables_stats(stats)
+            get_mangle_stats(tmpdir)
 
             if args.dry_run:
                 print(f"Writing /tmp/preview.html instead of {config_html_preview} due to --dry-run ... ")
@@ -851,23 +925,7 @@ if args.r:
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
-            if not args.iptables:
-
-                print("Getting nft mangle stats")
-                with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
-                    nft_get_stats(stats)
-            
-                print(f"Reading nft mangle stats ... ")
-                with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
-                    hosts.read_nft_stats(stats)
-            else:
-                print("Getting iptables stats")
-                with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
-                    iptables_get_stats(stats)
-            
-                print(f"Reading iptables.stats ... ")
-                with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
-                    hosts.read_iptables_stats(stats)
+            get_mangle_stats(tmpdir)
 
             if not args.dry_run:
                 print(f"Writing {config_html_day} ... ")
@@ -880,52 +938,7 @@ if args.r:
             else:
                 print(f"Skipped writing {config_html_day} and host logs due to dry run")
 
-            if args.devel:
-                tmpdir = "."
-
-            mangle_new = f"{tmpdir}/iptables.mangle.new"
-            print("Writing iptables.mangle.new ...")
-            with open(mangle_new, 'w') as mangle:
-                hosts.write_iptables_mangle(mangle)
-      
-            nft_mangle_new = f"/tmp/nft.mangle.new"
-            print("Writing nft.mangle.new ...")
-            with open(nft_mangle_new, 'w') as mangle:
-                hosts.write_nft_mangle(mangle)
-
-            tc_new = f"{tmpdir}/tc.new"
-            print("Writing tc.new...")
-            with open(tc_new, 'w') as tc_file:
-                hosts.write_tc_up(tc_file)
-
-            if not args.devel:
-                if not args.dry_run:
-                    print("Flushing old tc rules ...")
-                    for dev in [config_dev_lan, config_dev_wan]:
-                        subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"], check=True)
-                else:
-                    print("Not flushing old tc rules due to dry run.")
-
-                if args.iptables:
-                    if args.dry_run:
-                        print("Testing (no commit) nft.mangle.new via nft -c ... ")
-                        subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
-                    else:
-                        print("Loading nft.mangle.new via nft ... ")
-                        subprocess.run(["/usr/sbin/nft", "-f", nft_mangle_new], check=True)
-                else: 
-                    if args.dry_run:
-                        print("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
-                        subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
-                    else:
-                        print("Loading iptables.mangle.new via iptables-restore ... ")
-                        subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
-                
-                if args.dry_run:
-                    print("Not loading tc.new due to dry run")
-                else:
-                    print("Loading tc.new via tc -b ...")
-                    subprocess.run(["/usr/sbin/tc", "-b", tc_new], check=True)
+            reload_shaping(tmpdir, True)
 
         sys.exit(0)
     except ConfError as e:
@@ -965,17 +978,21 @@ try:
         with open(nat_conf_post, 'r') as natconf:
             hosts.read_nat_conf(natconf)
 
-        diffs = hosts.find_differences()
-        if diffs > 0:
-            logp(f"Found {diffs} more unexpected updates, aborting.")
+        check_diffs = hosts.find_differences()
+        if check_diffs > 0:
+            logp(f"Found {check_diffs} more unexpected updates, aborting.")
             sys.exit(1)
         elif args.dry_run:
-            logp(f"No differences, not replacing nat.conf due to --dry-run")
+            logp(f"No differences, but not replacing nat.conf due to --dry-run")
         else:
             logp(f"No differences, replacing nat.conf with {nat_conf_post}")
             shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
     else:
-        logp("No updates needed")
+        if not args.p:
+            logp("No updates needed, exiting. Re-run with -f to force updating nat and traffic shaping.")
+            logp("This is needed for new port forwards or bandwidth changes, which are currently not detected automatically")
+        else:
+            logp("No needed updates detected but continuing due to -f parameter.")
 
     if args.dry_run:
         logp(f"Generating /tmp/nat.up instead of {config_prefix}{config_nat_up} due to --dry-run")
@@ -1019,7 +1036,6 @@ try:
             else:
                 logp("Loading new nat.up.nft")
                 subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
-            ret = 0
         else:
             if args.dry_run:
                 print("Testing (no commit) nat.up via iptables-restore ... ")
@@ -1027,16 +1043,17 @@ try:
             else:
                 logp("Loading new nat.up to iptables")
                 subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
-            ret = 0
     else:
         logp("Skipping iptables-restore due to --devel")
-        ret = 0
 
-    if ret != 0:
-        logp(f"Error {ret} when executing iptables-restore") 
-    else:
-        logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
-             f"remaining public IPs: {len(hosts.free_public_ips)}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        get_mangle_stats(tmpdir)
+
+        reload_shaping(tmpdir, False)
+
+    logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
+         f"remaining public IPs: {len(hosts.free_public_ips)}")
+
 
 except ConfError as e:
     logp(e)
