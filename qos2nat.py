@@ -853,20 +853,20 @@ logfile = None
 parser = argparse.ArgumentParser()
 parser.add_argument("qos_conf", nargs='?', default=f"{config_prefix}{config_qos_conf}",
                     help=f"qos.conf location, default is {config_qos_conf}")
-parser.add_argument("--dns", action="store_true",
-                    help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat")
-parser.add_argument("--devel", action="store_true",
-                    help="development run, prefix all paths with local directory, don't execute iptables")
-parser.add_argument("--dry-run", action="store_true",
-                    help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
 parser.add_argument("-f", action="store_true",
                     help="force regenerate and reload nat and shaping even if no changes were detected")
-parser.add_argument("--iptables", action="store_true",
-                    help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
+parser.add_argument("--dry-run", action="store_true",
+                    help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
+parser.add_argument("--dns", action="store_true",
+                    help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat")
 parser.add_argument("-p", action="store_true",
                     help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
 parser.add_argument("-r", action="store_true",
                     help="generate yesterday.html and reset packet stats in kernel tables")
+parser.add_argument("--iptables", action="store_true",
+                    help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
+parser.add_argument("--devel", action="store_true",
+                    help="(dev only) development run, prefix all paths with local directory, don't execute iptables...")
 args = parser.parse_args()
 
 if args.devel:
