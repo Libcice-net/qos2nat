@@ -30,6 +30,8 @@ config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
 config_nat_backup = "/etc/nat_backup/nat_conf_"
 config_portmap = "/var/www/portmap.txt"
+config_mangle_up = "/etc/mangle.up"
+config_tc_up = "/etc/tc.up"
 
 config_html_preview = "/var/www/today.html"
 config_html_day = "/var/www/yesterday.html"
@@ -520,7 +522,8 @@ class Hosts:
             db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
 
     def write_nft_mangle(self, out, reset_stats):
-        out.write("flush table ip mangle\n")
+        out.write("add table ip mangle\n")
+        out.write("delete table ip mangle\n")
         out.write("add table ip mangle\n")
 
         out.write("add map ip mangle forw_map { type ipv4_addr : verdict; }\n")
@@ -678,9 +681,9 @@ class Hosts:
             else:
                 self.ip2upload[ip] = _bytes
                 self.ip2upload_packets[ip] = packets
-            if ip in self.ip2user:
-                user = self.ip2user[ip]
-                self.set_user_classid(user, int(classid))
+            #if ip in self.ip2user:
+            #    user = self.ip2user[ip]
+            #    self.set_user_classid(user, int(classid))
 
         if table_based is None:
             raise ConfError("Content of nft list table mangle not recognized")
@@ -776,17 +779,23 @@ def nft_get_stats(statsfile):
         runargs = ["cat", "nft.stats"]
     else:
         runargs = ["/usr/sbin/nft", "list", "table", "mangle"]
-    ret = subprocess.run(runargs, stdout=statsfile, check=True)
+    ret = subprocess.run(runargs, stdout=statsfile)
+    return ret.returncode
+    
 
 def get_mangle_stats(tmpdir):
     if not args.iptables:
         logp("Getting nft mangle stats")
+        ret = 1
         with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
-            nft_get_stats(stats)
+            ret = nft_get_stats(stats)
     
-        logp(f"Reading nft mangle stats ... ")
-        with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
-            hosts.read_nft_stats(stats)
+        if ret == 0:
+            logp(f"Reading nft mangle stats ... ")
+            with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
+                hosts.read_nft_stats(stats)
+        else:
+            logp("Could not get mangle stats (flushed table?), stats will be zero")
     else:
         logp("Getting iptables stats")
         with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
@@ -797,55 +806,57 @@ def get_mangle_stats(tmpdir):
             hosts.read_iptables_stats(stats)
 
 def reload_shaping(tmpdir, reset_stats):
-        if args.devel:
-            tmpdir = "."
-        elif args.dry_run:
-            tmpdir = "/tmp"
+
+        if args.dry_run and not args.devel:
+            mangle_up_name = "/tmp/mangle.up"
+            mangle_up_nft_name = "/tmp/mangle.up.nft"
+            tc_up_name = "/tmp/tc.up"
+        else:
+            mangle_up_name = f"{config_prefix}{config_mangle_up}"
+            mangle_up_nft_name = f"{config_prefix}{config_mangle_up}.nft"
+            tc_up_name = f"{config_prefix}{config_tc_up}"
 
         if args.iptables:
-            mangle_new = f"{tmpdir}/iptables.mangle.new"
-            logp("Writing iptables.mangle.new ...")
-            with open(mangle_new, 'w') as mangle:
+            logp(f"Writing {mangle_up_name} ...")
+            with open(mangle_up_name, 'w') as mangle:
                 hosts.write_iptables_mangle(mangle)
         else: 
-            nft_mangle_new = f"{tmpdir}/nft.mangle.new"
-            logp("Writing nft.mangle.new ...")
-            with open(nft_mangle_new, 'w') as mangle:
+            logp(f"Writing {mangle_up_nft_name} ...")
+            with open(mangle_up_nft_name, 'w') as mangle:
                 hosts.write_nft_mangle(mangle, reset_stats)
 
-        tc_new = f"{tmpdir}/tc.new"
-        logp("Writing tc.new...")
-        with open(tc_new, 'w') as tc_file:
+        logp(f"Writing {tc_up_name} ...")
+        with open(tc_up_name, 'w') as tc_file:
             hosts.write_tc_up(tc_file)
 
         if not args.devel:
             if not args.iptables:
                 if args.dry_run:
-                    logp("Testing (no commit) nft.mangle.new via nft -c ... ")
-                    subprocess.run(["/usr/sbin/nft", "-c", "-f", nft_mangle_new], check=True)
+                    logp(f"Testing (no commit) {mangle_up_nft_name} via nft -c ... ")
+                    subprocess.run(["/usr/sbin/nft", "-c", "-f", mangle_up_nft_name], check=True)
                 else:
-                    logp("Loading nft.mangle.new via nft ... ")
-                    subprocess.run(["/usr/sbin/nft", "-f", nft_mangle_new], check=True)
+                    logp(f"Loading {mangle_up_nft_name} via nft ... ")
+                    subprocess.run(["/usr/sbin/nft", "-f", mangle_up_nft_name], check=True)
             else: 
                 if args.dry_run:
-                    logp("Testing (no commit) iptables.mangle.new via iptables-restore ... ")
-                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_new], check=True)
+                    logp(f"Testing (no commit) {mangle_up_name} via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_up_name], check=True)
                 else:
-                    logp("Loading iptables.mangle.new via iptables-restore ... ")
-                    subprocess.run(["/usr/sbin/iptables-restore", mangle_new], check=True)
+                    logp(f"Loading {mangle_up_name} via iptables-restore ... ")
+                    subprocess.run(["/usr/sbin/iptables-restore", mangle_up_name], check=True)
             
             if not args.dry_run:
                 logp("Flushing old tc rules ...")
                 for dev in [config_dev_lan, config_dev_wan]:
-                    subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"], check=True)
+                    subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"])
             else:
                 logp("Not flushing old tc rules due to dry run.")
 
             if args.dry_run:
-                logp("Not loading tc.new due to dry run")
+                logp(f"Not loading {tc_up_name} due to dry run")
             else:
-                logp("Loading tc.new via tc -b ...")
-                subprocess.run(["/usr/sbin/tc", "-b", tc_new], check=True)
+                logp(f"Loading tc_up_name via tc -b ...")
+                subprocess.run(["/usr/sbin/tc", "-b", tc_up_name], check=True)
         else:
             logp("Not loading mangle and tc due to --devel")
                 
