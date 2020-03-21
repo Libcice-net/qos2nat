@@ -98,6 +98,7 @@ class Hosts:
         self.ip2pubip = dict()
         self.ip2portfwd = defaultdict(set) # ip -> set((pubip, src, dst, user, comment))
         self.pubip_port2ip_port = dict() # (pubip, src) -> (ip, dst)
+        self.pubip_port_nowarn = set() # (pubip, src)
 
         # what nat.conf updates needed
         self.nat_conf_ips_to_delete = set()
@@ -269,6 +270,8 @@ class Hosts:
                 self.pubip_port2ip_port[pubport] = locport
            
             self.free_public_ips.discard(pubip)
+            if comment.find("nowarn") != -1:
+                self.pubip_port_nowarn.add(pubport)
             return
 
         if ip in self.ip2pubip:
@@ -375,6 +378,8 @@ class Hosts:
                 (ip, port_dst) = self.pubip_port2ip_port[(pubip, port_src)]
                 # if the public ip is changing, don't warn 
                 if ip in self.nat_conf_pubip_changes:
+                    continue
+                if (pubip, port_src) in self.pubip_port_nowarn:
                     continue
                 user = self.ip2user[ip]
                 logp(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
