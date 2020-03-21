@@ -80,6 +80,13 @@ def human(val):
 
     return f"{val//1024} GB"
 
+def humankbps(val):
+    if val < 1000:
+        return f"{val} kbps"
+    val //= 1000
+
+    return f"{val} Mbps"
+
 class Hosts:
 
     def init_nat_conf(self):
@@ -728,8 +735,8 @@ class Hosts:
     def write_day_html(self, html):
         timestamp = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
         html.write("<table border>\n")
-        html.write(f"<tr><th colspan=11>Top Traffic Hosts ({timestamp})</th></tr>\n")
-        html.write(tr((tdr("#"), td("hostname (user)"), td("ip"), tdr("total"), tdr("down"), tdr("up"))))
+        html.write(f"<tr><th colspan=7>Top Traffic Hosts ({timestamp})</th></tr>\n")
+        html.write(tr((tdr("#"), td("hostname (user)"), td("ip"), tdr("total"), tdr("down"), tdr("up"), tdr("speed"))))
         num = 0
         for (ip, traffic) in sorted(self.ip2traffic.items(), key = lambda item: item[1], reverse=True):
             num += 1
@@ -742,13 +749,18 @@ class Hosts:
             except KeyError:
                 user = "(unknown)"
             if host == user:
-                hostuser = host
+                hostuser = f"<a href=\"logs/{host}.log\">{host}</a>"
             else:
-                hostuser = f"{host} ({user})"
+                hostuser = f"<a href=\"logs/{host}.log\">{host}</a> (<a href=\"logs/{user}.log\">{user}</a>)"
+            try:
+                (rate, ceil) = self.user2shaping[user]
+            except KeyError:
+                rate = 0
+                ceil = 0
             down = self.ip2download[ip]
             up = self.ip2upload[ip]
             html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(ip), tdr(human(traffic)),\
-                           tdr(human(down)), tdr(human(up)))))
+                           tdr(human(down)), tdr(human(up)), tdr(f"{humankbps(ceil)}"))))
         html.write("</table>\n")
 
     def write_host_logs(self):
