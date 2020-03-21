@@ -37,8 +37,8 @@ config_html_preview = "/var/www/today.html"
 config_html_day = "/var/www/yesterday.html"
 config_logdir = "/var/www/logs/"
 
-config_dns_db = "libcice.db.new"
-config_dns_rev_db = "92.10.db.new"
+config_dns_db = "/etc/admin_tools/libcice.db.new"
+config_dns_rev_db = "/etc/admin_tools/92.10.db.new"
 
 config_dev_lan="eno1"
 config_dev_wan="eno2"
@@ -531,7 +531,7 @@ class Hosts:
 
         for (ip, user) in self.ip2user.items():
             if user not in self.user2shaping:
-                print (f"skip ip {ip} of user {user} due to no defined shaping")
+                logp(f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
             classid = self.get_user_classid(user)
            
@@ -580,7 +580,7 @@ class Hosts:
 
         for (ip, user) in self.ip2user.items():
             if user not in self.user2shaping:
-                print (f"skip ip {ip} of user {user} due to no defined shaping")
+                logp(f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
             classid = self.get_user_classid(user)
             post = f"-A POSTROUTING -d {ip} -o {config_dev_lan}"
@@ -870,8 +870,6 @@ parser.add_argument("-f", action="store_true",
                     help="force regenerate and reload nat and shaping even if no changes were detected")
 parser.add_argument("--dry-run", action="store_true",
                     help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
-parser.add_argument("--dns", action="store_true",
-                    help=f"generate dns files {config_dns_db} and {config_dns_rev_db} instead of nat")
 parser.add_argument("-p", action="store_true",
                     help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
 parser.add_argument("-r", action="store_true",
@@ -887,41 +885,20 @@ if args.devel:
 
 qos_conf_path=f"{config_prefix}{args.qos_conf}"
 
-if args.dns:
-    try:
-        print(f"Reading {qos_conf_path} ...")
-        with open(qos_conf_path, 'r') as qosconf:
-            hosts.read_qos_conf(qosconf)
-
-        print(f"Writing {config_dns_db}")
-        with open(config_dns_db, 'w') as db:
-            hosts.write_dns_hosts(db)
-
-        print(f"Writing {config_dns_rev_db}")
-        with open(config_dns_rev_db, 'w') as db:
-            hosts.write_dns_reverse(db)
-
-        sys.exit(0)
-    except ConfError as e:
-        logp(e)
-        sys.exit(1)
-
 if args.p:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-
-            print(f"Reading {qos_conf_path} ...")
+            logp(f"Reading {qos_conf_path} ...")
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
             get_mangle_stats(tmpdir)
 
             if args.dry_run:
-                print(f"Writing /tmp/preview.html instead of {config_html_preview} due to --dry-run ... ")
-                preview_name = "/tmp/preview.html"
+                preview_name = "/tmp/today.html"
             else:
-                print(f"Writing {config_html_preview} ... ")
                 preview_name = f"{config_prefix}{config_html_preview}"
+            logp(f"Writing {preview_name} ...")
             with open(preview_name, 'w') as html:
                 hosts.write_day_html(html)
             
@@ -933,23 +910,26 @@ if args.p:
 if args.r:
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
- 
-            print(f"Reading {qos_conf_path} ...")
+            logp(f"Reading {qos_conf_path} ...")
             with open(qos_conf_path, 'r') as qosconf:
                 hosts.read_qos_conf(qosconf)
 
             get_mangle_stats(tmpdir)
 
-            if not args.dry_run:
-                print(f"Writing {config_html_day} ... ")
-                with open(f"{config_prefix}{config_html_day}", 'w') as html:
-                    hosts.write_day_html(html)
-            
-                print(f"Writing host logs ... ")
-                hosts.write_host_logs()
-
+            if args.dry_run:
+                day_name = "/tmp/yesterday.html"
             else:
-                print(f"Skipped writing {config_html_day} and host logs due to dry run")
+                day_name = f"{config_prefix}{config_html_preview}"
+            
+            logp(f"Writing {day_name} ... ")
+            with open(day_name, 'w') as html:
+                hosts.write_day_html(html)
+            
+            if not args.dry_run:
+                logp(f"Writing host logs ... ")
+                hosts.write_host_logs()
+            else:
+                logp(f"Skipped writing host logs due to --dry run")
 
             reload_shaping(tmpdir, True)
 
@@ -1008,51 +988,61 @@ try:
         else:
             logp("No needed updates detected but continuing due to -f parameter.")
 
-    if args.dry_run:
-        logp(f"Generating /tmp/nat.up instead of {config_prefix}{config_nat_up} due to --dry-run")
-        nat_up_name = "/tmp/nat.up"
-    else:
-        logp("Generating /etc/nat.up (in case of reboot) ...")
-        nat_up_name = f"{config_prefix}{config_nat_up}"
-    with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
-        nat_up.write("# generated by qos2nat.py\n")
-        for line in nat_global:
-            nat_up.write(line)
-        hosts.write_nat_up(nat_up)
-
     if not args.iptables:
         if args.dry_run:
-            logp(f"Generating /tmp/nat.up.nft instead of {config_prefix}{config_nat_up}.nft due to --dry-run")
             nat_up_nft_name = "/tmp/nat.up.nft"
         else:
-            logp("Generating nat.up.nft...")
             nat_up_nft_name = f"{config_prefix}{config_nat_up}.nft"
+        logp(f"Writing {nat_up_nft_name} ...")
         with open(f"{config_prefix}{config_nat_global}.nft", 'r') as nat_global_nft, open(nat_up_nft_name, 'w') as nat_up_nft:
-            nat_up_nft.write("# generated by qos2nat.py\n")
             for line in nat_global_nft:
                 nat_up_nft.write(line)
             hosts.write_nat_up_nft(nat_up_nft)
+    else:
+        if args.dry_run:
+            nat_up_name = "/tmp/nat.up"
+        else:
+            nat_up_name = f"{config_prefix}{config_nat_up}"
+        logp(f"Writing {nat_up_name}")
+        with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
+            nat_up.write("# generated by qos2nat.py\n")
+            for line in nat_global:
+                nat_up.write(line)
+            hosts.write_nat_up(nat_up)
 
     if args.dry_run:
-        logp(f"Generating /tmp/portmap.txt instead of {config_prefix}{config_portmap} due to --dry-run")
         portmap_name = "/tmp/portmap.txt"
     else:
-        logp("Generating portmap.txt...")
         portmap_name = f"{config_prefix}{config_portmap}"
+    logp(f"Writing {portmap_name} ...")
     with open(portmap_name, 'w') as portmap:
         hosts.write_portmap(portmap)
+
+    if args.dry_run:
+        dns_db_name = "/tmp/libcice.db.new"
+        dns_rev_db_name = "/tmp/92.10.db.new" 
+    else:
+        dns_db_name = f"{config_prefix}{config_dns_db}"
+        dns_rev_db_name = f"{config_prefix}{config_dns_rev_db}"        
+    logp(f"Writing {dns_db_name}")
+    with open(dns_db_name, 'w') as db:
+        hosts.write_dns_hosts(db)
+
+    logp(f"Writing {dns_rev_db_name}")
+    with open(dns_rev_db_name, 'w') as db:
+        hosts.write_dns_reverse(db)
 
     if not args.devel:
         if not args.iptables:
             if args.dry_run:
-                print("Testing (no commit) nat.up.nft via nft -t ... ")
+                logp("Testing (no commit) nat.up.nft via nft -t ... ")
                 subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
             else:
                 logp("Loading new nat.up.nft")
                 subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
         else:
             if args.dry_run:
-                print("Testing (no commit) nat.up via iptables-restore ... ")
+                logp("Testing (no commit) nat.up via iptables-restore ... ")
                 subprocess.run(["/usr/sbin/iptables-restore", "-t", nat_up_name], check=True)
             else:
                 logp("Loading new nat.up to iptables")
