@@ -8,10 +8,11 @@ import string
 import argparse
 import subprocess
 import tempfile
+import glob
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
 import time
-from datetime import datetime
+from datetime import datetime, date
 
 config_local_network = "10.92.0.0/16"
 config_public_networks = [
@@ -77,8 +78,8 @@ def tr(tds):
 def human(val):
     if val < 1024:
         return str(val)
-    val //= 1024
 
+    val //= 1024
     if val < 1024:
         return f"{val} KB"
 
@@ -86,11 +87,22 @@ def human(val):
     if val < 1024:
         return f"{val} MB"
 
-    return f"{val//1024} GB"
+    return f"{val/1024:.2f} GB"
+
+def humanmb(val):
+    if val < 1024:
+        return f"{val} MB"
+    val //= 1024
+
+    if val < 1024:
+        return f"{val} GB"
+
+    return f"{val/1024:.2f} TB"
 
 def humankbps(val):
     if val < 1000:
         return f"{val} kbps"
+
     val //= 1000
 
     return f"{val} Mbps"
@@ -135,6 +147,9 @@ class Hosts:
         self.ip2download_packets = dict()
         self.ip2upload_packets = dict()
         self.ip2traffic = defaultdict(int)
+
+        # from logs
+        self.host2traffic_stats = dict() # host -> (total, down, up, speed)
 
         self.last_classid = 2089
         self.user2classid = dict()
@@ -776,6 +791,18 @@ class Hosts:
                            tdr(human(down)), tdr(human(up)), tdr(f"{humankbps(ceil)}"))))
         html.write("</table>\n")
 
+    def write_monthyear_html(self, html, header):
+        html.write("<table border>\n")
+        html.write(f"<tr><th colspan=6>Top Traffic Hosts ({header})</th></tr>\n")
+        html.write(tr((tdr("#"), td("hostname"), tdr("total"), tdr("down"), tdr("up"), tdr("speed"))))
+        num = 0
+        for (host, stats) in sorted(self.host2traffic_stats.items(), key = lambda item: max(item[1][0], item[1][1]), reverse=True):
+            num += 1
+            (total, down, up, speed) = stats
+            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(host), tdr(humanmb(total)),\
+                           tdr(humanmb(down)), tdr(humanmb(up)), tdr(f"{humankbps(speed)}"))))
+        html.write("</table>\n")
+
     def write_host_logs(self):
         now = int(time.time())
         dt = datetime.fromtimestamp(now)
@@ -791,6 +818,40 @@ class Hosts:
             (rate, ceil) = self.user2shaping[user]
             with open(f"{config_prefix}{config_logdir}/{host}.log", 'a') as log:
                 log.write(f"{now}\t{host}\t{traffic}\t{down}\t0\t{up}\t{rate}\t{ceil}\t{ceil}\t{timestamp}\n")
+
+    def read_host_log(self, log, ts_start, ts_end):
+        stat_host = ""
+        stat_traffic = 0
+        stat_down = 0
+        stat_up = 0
+        stat_ceil = 0
+        for line in log:
+            line = line.strip()
+            m = re.match(r"([0-9]+)[ \t]+([\S]+)[ \t]+([0-9]+)[ \t]+([0-9]+)[ \t]+[0-9]+[ \t]+([0-9]+)[ \t]+[0-9]+[ \t]+[0-9]+[ \t]+([0-9]+)[ \t]+", line)
+            if not m:
+                print(f"Unmatched line: {line}")
+                continue
+            (ts, host, traffic, down, up, ceil) = m.groups()
+            ts = int(ts)
+            if ts < ts_start or ts > ts_end:
+                continue
+            stat_traffic += int(traffic)
+            stat_down += int(down)
+            stat_up += int(up)
+            stat_host = host
+            if int(ceil) > stat_ceil:
+                stat_ceil = int(ceil)
+        if stat_host != "":
+            self.host2traffic_stats[host] = (stat_traffic, stat_down, stat_up, stat_ceil)
+    
+    def read_host_logs(self, ts_start, ts_end):
+        for log_file in glob.iglob(f"{config_prefix}{config_logdir}/*.log"):
+            try:
+                with open(log_file, 'r') as log:
+                    self.read_host_log(log, ts_start, ts_end)
+            except Exception as e:
+                print(f"Failed to process {log_file}: {e}")
+
 
 def iptables_get_stats(statsfile):
     if args.devel:
@@ -899,6 +960,8 @@ parser.add_argument("-p", action="store_true",
                     help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
 parser.add_argument("-r", action="store_true",
                     help="generate yesterday.html and reset packet stats in kernel tables")
+parser.add_argument("-m", action="store_true",
+                    help="only generate html stats for previous month")
 parser.add_argument("--iptables", action="store_true",
                     help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
 parser.add_argument("--devel", action="store_true",
@@ -909,6 +972,25 @@ if args.devel:
     config_prefix="."
 
 qos_conf_path=f"{config_prefix}{args.qos_conf}"
+
+if args.m:
+    now = date.today()
+    if now.month == 1:
+        start_month = 12
+        start_year = now.year - 1
+    else:
+        start_month = now.month - 1
+        start_year = now.year
+    date_start = datetime(start_year, start_month, 1, 3)
+    ts_start = date_start.timestamp()
+    ts_end = datetime(now.year, now.month, 1, 3).timestamp()
+    hosts.read_host_logs(ts_start, ts_end)
+    month_str = date_start.strftime("%b")
+    html_name = f"{config_prefix}{config_logdir}html/{start_year}-{month_str}.html"
+    print(f"Writing {html_name}")
+    with open(html_name, 'w') as html:
+        hosts.write_monthyear_html(html, f"{month_str} {start_year}")
+    sys.exit(0)
 
 if args.p:
     try:
