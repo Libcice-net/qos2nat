@@ -777,9 +777,9 @@ class Hosts:
             except KeyError:
                 user = "(unknown)"
             if host == user:
-                hostuser = f"<a href=\"logs/{host}.log\">{host}</a>"
+                hostuser = f"<a href=\"logs/{host}.log\"><b>{host}</b></a>"
             else:
-                hostuser = f"<a href=\"logs/{host}.log\">{host}</a> (<a href=\"logs/{user}.log\">{user}</a>)"
+                hostuser = f"<a href=\"logs/{host}.log\"><b>{host}</b></a> (<a href=\"logs/{user}.log\">{user}</a>)"
             try:
                 (rate, ceil) = self.user2shaping[user]
             except KeyError:
@@ -787,7 +787,7 @@ class Hosts:
                 ceil = 0
             down = self.ip2download[ip]
             up = self.ip2upload[ip]
-            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(ip), tdr(human(traffic)),\
+            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(ip), tdr(f"<b>{human(traffic)}</b>"),\
                            tdr(human(down)), tdr(human(up)), tdr(f"{humankbps(ceil)}"))))
         html.write("</table>\n")
 
@@ -799,7 +799,7 @@ class Hosts:
         for (host, stats) in sorted(self.host2traffic_stats.items(), key = lambda item: max(item[1][0], item[1][1]), reverse=True):
             num += 1
             (total, down, up, speed) = stats
-            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(host), tdr(humanmb(total)),\
+            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(f"<b>{host}</b>"), tdr(f"<b>{humanmb(total)}</b>"),\
                            tdr(humanmb(down)), tdr(humanmb(up)), tdr(f"{humankbps(speed)}"))))
         html.write("</table>\n")
 
@@ -962,6 +962,8 @@ parser.add_argument("-r", action="store_true",
                     help="generate yesterday.html and reset packet stats in kernel tables")
 parser.add_argument("-m", action="store_true",
                     help="only generate html stats for previous month")
+parser.add_argument("-y", action="store_true",
+                    help="only generate html stats for previous year")
 parser.add_argument("--iptables", action="store_true",
                     help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
 parser.add_argument("--devel", action="store_true",
@@ -986,6 +988,20 @@ if args.m:
     ts_end = datetime(now.year, now.month, 1, 3).timestamp()
     hosts.read_host_logs(ts_start, ts_end)
     month_str = date_start.strftime("%b")
+    html_name = f"{config_prefix}{config_logdir}html/{start_year}-{month_str}.html"
+    print(f"Writing {html_name}")
+    with open(html_name, 'w') as html:
+        hosts.write_monthyear_html(html, f"{month_str} {start_year}")
+    sys.exit(0)
+
+if args.y:
+    now = date.today()
+    start_year = now.year - 1
+    date_start = datetime(start_year, 1, 1, 3)
+    ts_start = date_start.timestamp()
+    ts_end = datetime(now.year, 1, 1, 3).timestamp()
+    hosts.read_host_logs(ts_start, ts_end)
+    month_str = "Year"
     html_name = f"{config_prefix}{config_logdir}html/{start_year}-{month_str}.html"
     print(f"Writing {html_name}")
     with open(html_name, 'w') as html:
