@@ -1042,7 +1042,7 @@ if args.r:
             if args.dry_run:
                 day_name = "/tmp/yesterday.html"
             else:
-                day_name = f"{config_prefix}{config_html_preview}"
+                day_name = f"{config_prefix}{config_html_day}"
             
             logp(f"Writing {day_name} ... ")
             with open(day_name, 'w') as html:
