@@ -246,7 +246,7 @@ class Hosts:
             else:
                 m = re.match(r"sharing-([\S]+)", shaping)
                 if not m:
-                    raiseConfError(f"Error parsing qos.conf line {line_num} - shaping not recognized: {shaping}")
+                    raise ConfError(f"Error parsing qos.conf line {line_num} - shaping not recognized: {shaping}")
                 user = m.group(1)
                 shaping = None
 
