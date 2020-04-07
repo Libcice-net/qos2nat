@@ -46,17 +46,28 @@ config_dev_wan="eno2"
 
 logfile = None
 
-def log(msg):
+errors_not_fatal = False
+errors_log = None
+
+def log(msg, err=False):
+    global logfile, errors_log
     if logfile:
         logfile.write(f"{msg}\n")
+    if err and errors_log is not None:
+        errors_log += f"{msg}\n"
 
 def logc(msg):
+    global logfile, errors_log
     if logfile:
-        logfile.write(f"{msg}")
+        logfile.write(msg)
 
 def logp(msg):
     print(msg)
     log(msg)
+
+def logpe(msg):
+    print(msg)
+    log(msg, err=True)
 
 def logpc(msg):
     print(msg, end='')
@@ -179,7 +190,7 @@ class Hosts:
     def add_qos(self, ip, host, user, shaping = None):
         if ip in self.ip2host:
             host_other = self.ip2host[ip]
-            logp(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
+            logpe(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
             ip_other = self.host2ip[host_other]
             user_other = self.ip2user[ip_other]
             if user != user_other:
@@ -190,7 +201,7 @@ class Hosts:
         if host in self.host2ip:
             ip_other = self.host2ip[host]
             user_other = self.ip2user[ip_other]
-            logp(f"Warning: Duplicate hostname in qos.conf: {host} is IP {ip_other} (user {user_other}) "
+            logpe(f"Warning: Duplicate hostname in qos.conf: {host} is IP {ip_other} (user {user_other}) "
                   f"and {ip} (user {user})")
         else:
             self.host2ip[host] = ip
@@ -222,42 +233,45 @@ class Hosts:
             if m:
                 continue
 
-            m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
-            if not m:
-                raise ConfError(f"Error parsing qos.conf line {line_num}: {line}")
-
-            (ip, host, shaping) = m.groups()
-
             try:
-                ip = ip_address(ip)
-            except ValueError as e:
-                raise ConfError(f"Error parsing qos.conf line {line_num}: {e}")
-
-            if host == 'loopback':
-                continue
-
-            if ip not in self.local_network:
-                raise ConfError(f"Error parsing qos.conf line {line_num}: IP {ip} not in local network {self.local_network}")
-
-            m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
-            if m:
-                user = host
-                shaping = (int(m.group(1)), int(m.group(2)))
-            else:
-                m = re.match(r"sharing-([\S]+)", shaping)
+                m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
                 if not m:
-                    raise ConfError(f"Error parsing qos.conf line {line_num} - shaping not recognized: {shaping}")
-                user = m.group(1)
-                shaping = None
+                    raise ConfError(f"regex failed: {line}")
 
-            try:
+                (ip, host, shaping) = m.groups()
+
+                try:
+                    ip = ip_address(ip)
+                except ValueError as e:
+                    raise ConfError(f"IP parsing error: {e}")
+
+                if host == 'loopback':
+                    continue
+
+                if ip not in self.local_network:
+                    raise ConfError(f"IP {ip} not in local network {self.local_network}")
+
+                m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
+                if m:
+                    user = host
+                    shaping = (int(m.group(1)), int(m.group(2)))
+                else:
+                    m = re.match(r"sharing-([\S]+)", shaping)
+                    if not m:
+                        raise ConfError(f"unknown shaping: {shaping}")
+                    user = m.group(1)
+                    shaping = None
+
                 self.add_qos(ip, host, user, shaping)
             except ConfError as e:
-                raise ConfError(f"Error processing qos.conf line {line_num}: {e}")
+                err = f"Error processing qos.conf line {line_num}: {e}"
+                if not errors_not_fatal:
+                    raise ConfError(err)
+                logpe(err)
 
         for user in self.users:
             if user not in self.user2shaping:
-                logp(f"Warning: No shaping in qos.conf defined for user {user}")
+                logpe(f"Warning: No shaping in qos.conf defined for user {user}")
 
     def add_nat_conf(self, pubip, ip, port_src, port_dst, user, comment):
 
@@ -761,6 +775,8 @@ class Hosts:
                 self.set_user_classid(user, int(classid))
 
     def write_day_html(self, html):
+        if errors_log:
+            html.write(f"<pre>{errors_log}</pre>")
         timestamp = datetime.now().strftime("%a %b %d %H:%M:%S %Y")
         html.write("<table border>\n")
         html.write(f"<tr><th colspan=7>Top Traffic Hosts ({timestamp})</th></tr>\n")
@@ -1009,6 +1025,8 @@ if args.y:
     sys.exit(0)
 
 if args.p:
+    errors_not_fatal = True
+    errors_log = ""
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             logp(f"Reading {qos_conf_path} ...")
@@ -1031,6 +1049,8 @@ if args.p:
         sys.exit(1)
 
 if args.r:
+    errors_not_fatal = True
+    errors_log = ""
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             logp(f"Reading {qos_conf_path} ...")
