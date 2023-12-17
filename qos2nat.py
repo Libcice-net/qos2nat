@@ -139,6 +139,8 @@ class Hosts:
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
         self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
+        # to clean up after bug duplicating nat.conf * * entries
+        self.nat_conf_ip_already_written = set()
 
         self.free_public_ips = set(self.all_public_ips)
 
@@ -373,7 +375,12 @@ class Hosts:
                 natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
             self.nat_conf_pubip_already_added.add(pubip)
 
-        natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
+        is_auto_entry = (port_src == "*" and port_dst == "*")
+
+        if not is_auto_entry or ip not in self.nat_conf_ip_already_written:
+            natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
+            if is_auto_entry:
+                self.nat_conf_ip_already_written.add(ip)
 
     def read_nat_conf(self, natconf, natconf_new=None):
 
