@@ -365,7 +365,7 @@ class Hosts:
                 if oldpubip == pubip:
                     pubip = newpubip
 
-        if pubip in self.nat_conf_pubip2ip_to_add:
+        if pubip in self.nat_conf_pubip2ip_to_add and pubip not in self.nat_conf_pubip_already_added:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
                 # we are adding new local IP to existing public IP, so write the line
                 # next to existing line
