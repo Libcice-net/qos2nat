@@ -276,18 +276,19 @@ class Hosts:
     def add_nat_conf(self, pubip, ip, port_src, port_dst, user, comment):
 
         if port_src != "*" or port_dst != "*":
-            try:
-                port_src = int(port_src)
-                if port_src < 1 or port_src > 65535:
-                    raise ValueError()
-            except ValueError:
-                raise ConfError(f"invalid external port number {port_src}")
-            try:
-                port_dst = int(port_dst)
-                if port_dst < 1 or port_dst > 65535:
-                    raise ValueError()
-            except ValueError:
-                raise ConfError(f"invalid internal port number {port_dst}")
+            if port_src != "all" or port_dst != "all":
+                try:
+                    port_src = int(port_src)
+                    if port_src < 1 or port_src > 65535:
+                        raise ValueError()
+                except ValueError:
+                    raise ConfError(f"invalid external port number {port_src}")
+                try:
+                    port_dst = int(port_dst)
+                    if port_dst < 1 or port_dst > 65535:
+                        raise ValueError()
+                except ValueError:
+                    raise ConfError(f"invalid internal port number {port_dst}")
 
             self.ip2portfwd[ip].add((pubip, port_src, port_dst, user, comment))
 
@@ -383,7 +384,7 @@ class Hosts:
             # remove leading/trailing whitespace
             #line = line.strip()
 
-            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([0-9*]+)[ \t]([0-9*]+)[ \t]# ([\S]+)(.*)", line)
+            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]# ([\S]+)(.*)", line)
             if not m:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
             
@@ -521,9 +522,13 @@ class Hosts:
                 continue
 
             for (pubip, pub_port, loc_port, _, _) in self.ip2portfwd[ip]:
-                for proto in ("tcp", "udp"):
-                    nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} {proto} dport {pub_port} "
-                                 f"dnat to {ip}:{loc_port}\n")
+                if pub_port == "all" and loc_port == "all":
+                    nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} "
+                                 f"dnat to {ip}\n")
+                else:
+                    for proto in ("tcp", "udp"):
+                        nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} {proto} dport {pub_port} "
+                                     f"dnat to {ip}:{loc_port}\n")
     
         nat_up.write(f"add rule ip nat POSTROUTING ip daddr != {localnet} snat ip saddr map @snat_map\n")
 
@@ -538,9 +543,13 @@ class Hosts:
                 continue
 
             for (pubip, pub_port, loc_port, _, _) in self.ip2portfwd[ip]:
-                for proto in ("tcp", "udp"):
-                    nat_up.write(f"-A PREROUTING -d {pubip} -p {proto} -m {proto} --dport {pub_port} "
-                                 f"-j DNAT --to-destination {ip}:{loc_port}\n")
+                if pub_port == "all" and loc_port == "all":
+                    nat_up.write(f"-A PREROUTING -d {pubip} "
+                                 f"-j DNAT --to-destination {ip}")
+                else:
+                    for proto in ("tcp", "udp"):
+                        nat_up.write(f"-A PREROUTING -d {pubip} -p {proto} -m {proto} --dport {pub_port} "
+                                     f"-j DNAT --to-destination {ip}:{loc_port}\n")
 
         nat_up.write("COMMIT\n")
 
