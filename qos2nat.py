@@ -181,7 +181,7 @@ class Hosts:
         if user not in self.user2classid:
             self.user2classid[user] = self.get_classid()
         return self.user2classid[user]
-    
+
     def set_user_classid(self, user, classid):
         self.user2classid[user] = classid
         if classid > self.last_classid:
@@ -194,7 +194,7 @@ class Hosts:
             ip_other = self.host2ip[host_other]
             user_other = self.ip2user[ip_other]
             if user != user_other:
-                raise ConfError(f"Duplicate IP in qos.conf: {ip} belongs to users {user_other} and {user}")                
+                raise ConfError(f"Duplicate IP in qos.conf: {ip} belongs to users {user_other} and {user}")
         else:
             self.ip2host[ip] = host
 
@@ -215,7 +215,7 @@ class Hosts:
             self.user2shaping[user] = shaping
             self.user2ip[user] = ip
             self.user2classid[user] = self.get_classid()
-            
+
     def read_qos_conf(self, qosconf):
 
         line_num = 0
@@ -306,7 +306,7 @@ class Hosts:
                                     f"{other_ip}:{other_port_dst}")
             else:
                 self.pubip_port2ip_port[pubport] = locport
-           
+
             self.free_public_ips.discard(pubip)
             if comment.find("nowarn") != -1:
                 self.pubip_port_nowarn.add(pubport)
@@ -331,7 +331,7 @@ class Hosts:
                     logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
             else:
                 self.ipuser2pubip[ipuser] = pubip
-         
+
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
             if pubip != pubip_other:
@@ -347,9 +347,9 @@ class Hosts:
             self.pubip2user[pubip] = user
 
         self.free_public_ips.discard(pubip)
-        
+
     def write_nat_conf_line(self, pubip, ip, port_src, port_dst, user, comment, natconf_new):
-       
+
         if ip in self.nat_conf_ips_to_delete:
             return
 
@@ -364,7 +364,7 @@ class Hosts:
                 (oldpubip, newpubip) = self.nat_conf_pubip_changes[ip]
                 if oldpubip == pubip:
                     pubip = newpubip
-        
+
         if pubip in self.nat_conf_pubip2ip_to_add:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
                 # we are adding new local IP to existing public IP, so write the line
@@ -372,9 +372,9 @@ class Hosts:
                 new_user = self.ip2user[new_ip]
                 natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
             self.nat_conf_pubip_already_added.add(pubip)
- 
+
         natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
-        
+
     def read_nat_conf(self, natconf, natconf_new=None):
 
         line_num = 0
@@ -387,7 +387,7 @@ class Hosts:
             m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]# ([\S]+)(.*)", line)
             if not m:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
-            
+
             (pubip, ip, port_src, port_dst, user, comment) = m.groups()
 
             try:
@@ -401,9 +401,9 @@ class Hosts:
 
             if pubip not in self.all_public_ips:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in libcice.net ranges")
-           
+
             if natconf_new:
-                self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new) 
+                self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new)
             else:
                 try:
                     self.add_nat_conf(pubip, ip, port_src, port_dst, user, comment)
@@ -414,14 +414,13 @@ class Hosts:
         for (pubip, port_src) in self.pubip_port2ip_port:
             if pubip not in self.pubip2user:
                 (ip, port_dst) = self.pubip_port2ip_port[(pubip, port_src)]
-                # if the public ip is changing, don't warn 
+                # if the public ip is changing, don't warn
                 if ip in self.nat_conf_pubip_changes:
                     continue
                 if (pubip, port_src) in self.pubip_port_nowarn:
                     continue
                 user = self.ip2user[ip]
                 logp(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
-                    
 
     def update_nat_conf(self, natconf_old, natconf_new):
 
@@ -473,7 +472,7 @@ class Hosts:
                     else:
                         newpubip = self.get_new_public_ip(newuser)
                         self.nat_conf_user2pubip_to_add[newuser] = newpubip
-                        
+
                     ipchange = f" and changing public IP {oldpubip} to {newpubip}"
                     self.nat_conf_pubip_changes[ip] = (oldpubip, newpubip)
                 fwds = 0
@@ -504,7 +503,7 @@ class Hosts:
                     pubip = self.get_new_public_ip(user)
                     self.nat_conf_user2pubip_to_add[user] = pubip
                     info = f"with new user's public IP {pubip}"
-                    
+
                 logp(f"User {user}: adding local IP {ip} (host {host}) {info}")
                 self.nat_conf_pubip2ip_to_add[pubip].add(ip)
         return found
@@ -529,7 +528,7 @@ class Hosts:
                     for proto in ("tcp", "udp"):
                         nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} {proto} dport {pub_port} "
                                      f"dnat to {ip}:{loc_port}\n")
-    
+
         nat_up.write(f"add rule ip nat POSTROUTING ip daddr != {localnet} snat ip saddr map @snat_map\n")
 
     def write_nat_up(self, nat_up):
@@ -556,7 +555,7 @@ class Hosts:
     def write_portmap(self, portmap):
 
         for (ip, pubip) in self.ip2pubip.items():
-            
+
             if not ip in self.ip2portfwd:
                 continue
 
@@ -592,7 +591,7 @@ class Hosts:
                 log(f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
             classid = self.get_user_classid(user)
-           
+
             ipstr = str(ip).replace(".", "_")
             for prefix in ("post", "forw"):
                 _bytes = 0
@@ -604,14 +603,14 @@ class Hosts:
                     elif ip in self.ip2upload:
                         _bytes = self.ip2upload[ip]
                         packets = self.ip2upload_packets[ip]
-                        
+
                 out.write(f"add chain ip mangle {prefix}_{ipstr}\n")
                 out.write(f"add rule ip mangle {prefix}_{ipstr} counter packets {packets} bytes {_bytes} meta priority set 1:{classid} accept\n")
                 out.write(f"add element ip mangle {prefix}_map {{ {ip} : goto {prefix}_{ipstr} }}\n")
-            
+
         out.write("add chain ip mangle forw_common\n")
         out.write("add rule ip mangle forw_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
-        
+
         out.write("add chain ip mangle post_common\n")
         out.write("add rule ip mangle post_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
         out.write("add chain ip mangle forward { type filter hook forward priority -150; policy accept; }\n")
@@ -656,9 +655,12 @@ class Hosts:
     def write_tc_up(self, out):
         for dev in (config_dev_lan, config_dev_wan):
             out.write(f"qdisc add dev {dev} root handle 1: htb r2q 5 default 1\n")
-            out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 1000Mbit ceil 1000Mbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
-            out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 950000kbit ceil 950000kbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
-            out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 950000kbit ceil 950000kbit burst 1300k cburst 1300k prio 1 quantum 20000\n")
+            #out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 2000Mbit ceil 2000Mbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
+            #out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 1950000kbit ceil 1950000kbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
+            #out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 1950000kbit ceil 1950000kbit burst 1300k cburst 1300k prio 1 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 2000Mbit ceil 2000Mbit burst 14300k cburst 14300k prio 0 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 1950000kbit ceil 1950000kbit burst 10300k cburst 10300k prio 0 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 1950000kbit ceil 1950000kbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
 
         for (user, shaping) in self.user2shaping.items():
             (rate, ceil) = shaping
@@ -671,7 +673,7 @@ class Hosts:
             out.write(f"class add dev {dev} parent 1:1025 classid 1:3 htb rate 64kbit ceil 128kbit burst 256k cburst 256k prio 7 quantum 1500\n")
             out.write(f"qdisc add dev {dev} parent 1:3 handle 3 fq_codel\n")
             out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
-    
+
     def read_nft_stats(self, stats):
         table_based = None
         down = None
@@ -702,7 +704,7 @@ class Hosts:
                 elif dev == config_dev_wan and sdaddr == "saddr":
                     down = False
                 else:
-                    continue 
+                    continue
 
             else:
                 if table_in_chain:
@@ -713,7 +715,7 @@ class Hosts:
                     table_in_chain = False
                 else:
                     m = re.match(r"chain (post|forw)_([0-9]+)_([0-9]+)_([0-9]+)_([0-9]+) {", line)
-                    
+
                     if not m:
                         continue
 
@@ -729,7 +731,7 @@ class Hosts:
             ip = ip_address(ip)
             if ip not in self.local_network:
                 continue
-            
+
             _bytes = int(_bytes)
             self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
             packets = int(packets)
@@ -745,7 +747,7 @@ class Hosts:
 
         if table_based is None:
             raise ConfError("Content of nft list table mangle not recognized")
-            
+
     def read_iptables_stats(self, stats):
         for line in stats:
             line = line.strip()
@@ -760,7 +762,7 @@ class Hosts:
                 if tgt_ip == "0.0.0.0/0":
                     continue
                 ip = ip_address(tgt_ip)
-                
+
             elif dev == config_dev_wan and tgt_ip == "0.0.0.0/0":
                 if src_ip == "0.0.0.0/0":
                     continue
@@ -768,7 +770,7 @@ class Hosts:
                 down = False
             else:
                 continue
-                
+
             if ip not in self.local_network:
                     continue
 
@@ -868,7 +870,7 @@ class Hosts:
                 stat_ceil = int(ceil)
         if stat_host != "":
             self.host2traffic_stats[host] = (stat_traffic, stat_down, stat_up, stat_ceil)
-    
+
     def read_host_logs(self, ts_start, ts_end):
         for log_file in glob.iglob(f"{config_prefix}{config_logdir}/*.log"):
             try:
@@ -884,7 +886,7 @@ def iptables_get_stats(statsfile):
     else:
         runargs = ["/usr/sbin/iptables", "-L", "-v", "-x", "-n", "-t", "mangle"]
     ret = subprocess.run(runargs, stdout=statsfile, check=True)
-                
+
 def nft_get_stats(statsfile):
     if args.devel:
         runargs = ["cat", "nft.stats"]
@@ -892,15 +894,15 @@ def nft_get_stats(statsfile):
         runargs = ["/usr/sbin/nft", "list", "table", "mangle"]
     ret = subprocess.run(runargs, stdout=statsfile)
     return ret.returncode
-    
+
 
 def get_mangle_stats(tmpdir):
     if not args.iptables:
         logpc("nft mangle stats: reading ... ")
         ret = 1
-        with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:    
+        with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:
             ret = nft_get_stats(stats)
-    
+
         if ret == 0:
             logp(f"parsing ...")
             with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
@@ -909,9 +911,9 @@ def get_mangle_stats(tmpdir):
             logp("Could not get mangle stats (flushed table?), stats will be zero")
     else:
         logp("Getting iptables stats")
-        with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:    
+        with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:
             iptables_get_stats(stats)
-    
+
         logp(f"Reading iptables.stats ... ")
         with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
             hosts.read_iptables_stats(stats)
@@ -955,7 +957,7 @@ def reload_shaping(tmpdir, reset_stats):
                 else:
                     logp(f"Loading {mangle_up_name} via iptables-restore ... ")
                     subprocess.run(["/usr/sbin/iptables-restore", mangle_up_name], check=True)
-            
+
             if not args.dry_run:
                 logpc("Flushing old tc rules ... ")
                 for dev in [config_dev_lan, config_dev_wan]:
@@ -970,7 +972,7 @@ def reload_shaping(tmpdir, reset_stats):
                 subprocess.run(["/usr/sbin/tc", "-b", tc_up_name], check=True)
         else:
             logp("Not loading mangle and tc due to --devel")
-                
+
 hosts = Hosts()
 logfile = None
 
@@ -1051,7 +1053,7 @@ if args.p:
             logp(f"Writing {preview_name} ...")
             with open(preview_name, 'w') as html:
                 hosts.write_day_html(html)
-            
+
         sys.exit(0)
     except ConfError as e:
         logp(e)
@@ -1072,11 +1074,11 @@ if args.r:
                 day_name = "/tmp/yesterday.html"
             else:
                 day_name = f"{config_prefix}{config_html_day}"
-            
+
             logp(f"Writing {day_name} ... ")
             with open(day_name, 'w') as html:
                 hosts.write_day_html(html)
-            
+
             if not args.dry_run:
                 logp(f"Writing host logs ... ")
                 hosts.write_host_logs()
@@ -1094,7 +1096,7 @@ try:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
     logfile = open(f"{config_prefix}{config_logfile}", 'a')
-    
+
     log(f"Start qos2nat.py {timestamp}")
 
     logp(f"Reading {qos_conf_path} ...")
@@ -1136,7 +1138,7 @@ try:
         if not args.f:
             logp("No updates needed, exiting. Re-run with -f to force updating nat and traffic shaping.")
             logp("(run with -f is needed for new port forwards or bandwidth changes, which are currently not detected automatically)")
-            sys.exit(0) 
+            sys.exit(0)
         else:
             logp("No needed updates detected but continuing due to -f parameter.")
 
@@ -1172,10 +1174,10 @@ try:
 
     if args.dry_run:
         dns_db_name = "/tmp/libcice.db.new"
-        dns_rev_db_name = "/tmp/92.10.db.new" 
+        dns_rev_db_name = "/tmp/92.10.db.new"
     else:
         dns_db_name = f"{config_prefix}{config_dns_db}"
-        dns_rev_db_name = f"{config_prefix}{config_dns_rev_db}"        
+        dns_rev_db_name = f"{config_prefix}{config_dns_rev_db}"
     logpc(f"{dns_db_name} ")
     with open(dns_db_name, 'w') as db:
         hosts.write_dns_hosts(db)
