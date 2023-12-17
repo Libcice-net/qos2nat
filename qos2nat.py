@@ -393,6 +393,7 @@ class Hosts:
             try:
                 pubip = ip_address(pubip)
                 ip = ip_address(ip)
+                comment = comment.rstrip()
             except ValueError as e:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
 
@@ -1114,7 +1115,7 @@ try:
 
     logp("Calculating nat.conf updates:")
     diffs = hosts.find_differences()
-    if diffs > 0:
+    if diffs > 0 or args.f:
         nat_conf_post = f"{config_prefix}{config_nat_backup}{timestamp}_post"
         logp(f"Writing {nat_conf_post} with {diffs} updates...")
         with open(nat_conf_pre, 'r') as natconf, open(nat_conf_post, 'w') as natconf_new:
