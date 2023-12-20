@@ -49,6 +49,9 @@ logfile = None
 errors_not_fatal = False
 errors_log = None
 
+verbose_prints = False
+
+# log to file and optionally append error to errors_log
 def log(msg, err=False):
     global logfile, errors_log
     if logfile:
@@ -56,21 +59,29 @@ def log(msg, err=False):
     if err and errors_log is not None:
         errors_log += f"{msg}\n"
 
+# log to file without newline
 def logc(msg):
-    global logfile, errors_log
+    global logfile
     if logfile:
         logfile.write(msg)
 
-def logp(msg):
-    print(msg)
+# log to file and print
+def logp(msg, quiet=False):
+    global verbose_prints
+    if not quiet or verbose_prints:
+        print(msg)
     log(msg)
 
+# log to file and print and append to errors_log
 def logpe(msg):
     print(msg)
     log(msg, err=True)
 
-def logpc(msg):
-    print(msg, end='')
+# log to file and print without newline
+def logpc(msg, quiet=False):
+    global verbose_prints
+    if not quiet or verbose_prints:
+        print(msg, end='')
     logc(msg)
 
 class ConfError(RuntimeError):
@@ -906,23 +917,23 @@ def nft_get_stats(statsfile):
 
 def get_mangle_stats(tmpdir):
     if not args.iptables:
-        logpc("nft mangle stats: reading ... ")
+        logpc("nft mangle stats: reading ... ", True)
         ret = 1
         with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:
             ret = nft_get_stats(stats)
 
         if ret == 0:
-            logp(f"parsing ...")
+            logp(f"parsing ...", True)
             with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
                 hosts.read_nft_stats(stats)
         else:
             logp("Could not get mangle stats (flushed table?), stats will be zero")
     else:
-        logp("Getting iptables stats")
+        logp("Getting iptables stats", True)
         with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:
             iptables_get_stats(stats)
 
-        logp(f"Reading iptables.stats ... ")
+        logp(f"Reading iptables.stats ... ", True)
         with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
             hosts.read_iptables_stats(stats)
 
@@ -938,48 +949,48 @@ def reload_shaping(tmpdir, reset_stats):
             tc_up_name = f"{config_prefix}{config_tc_up}"
 
         if args.iptables:
-            logpc(f"Writing {mangle_up_name} ")
+            logpc(f"Writing {mangle_up_name} ", True)
             with open(mangle_up_name, 'w') as mangle:
                 hosts.write_iptables_mangle(mangle)
         else: 
-            logpc(f"Writing {mangle_up_nft_name} ")
+            logpc(f"Writing {mangle_up_nft_name} ", True)
             with open(mangle_up_nft_name, 'w') as mangle:
                 hosts.write_nft_mangle(mangle, reset_stats)
 
-        logp(f"{tc_up_name}")
+        logp(f"{tc_up_name}", True)
         with open(tc_up_name, 'w') as tc_file:
             hosts.write_tc_up(tc_file)
 
         if not args.devel:
             if not args.iptables:
                 if args.dry_run:
-                    logp(f"Testing (no commit) {mangle_up_nft_name} via nft -c ... ")
+                    logp(f"Testing (no commit) {mangle_up_nft_name} via nft -c ... ", True)
                     subprocess.run(["/usr/sbin/nft", "-c", "-f", mangle_up_nft_name], check=True)
                 else:
-                    logp(f"Loading {mangle_up_nft_name} via nft ... ")
+                    logp(f"Loading {mangle_up_nft_name} via nft ... ", True)
                     subprocess.run(["/usr/sbin/nft", "-f", mangle_up_nft_name], check=True)
             else: 
                 if args.dry_run:
-                    logp(f"Testing (no commit) {mangle_up_name} via iptables-restore ... ")
+                    logp(f"Testing (no commit) {mangle_up_name} via iptables-restore ... ", True)
                     subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_up_name], check=True)
                 else:
-                    logp(f"Loading {mangle_up_name} via iptables-restore ... ")
+                    logp(f"Loading {mangle_up_name} via iptables-restore ... ", True)
                     subprocess.run(["/usr/sbin/iptables-restore", mangle_up_name], check=True)
 
             if not args.dry_run:
-                logpc("Flushing old tc rules ... ")
+                logpc("Flushing old tc rules ... ", True)
                 for dev in [config_dev_lan, config_dev_wan]:
                     subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"])
             else:
-                logp("Not flushing old tc rules due to dry run.")
+                logp("Not flushing old tc rules due to dry run.", True)
 
             if args.dry_run:
-                logp(f"Not loading {tc_up_name} due to dry run")
+                logp(f"Not loading {tc_up_name} due to dry run", True)
             else:
-                logp(f"loading {tc_up_name} via tc -b ...")
+                logp(f"loading {tc_up_name} via tc -b ...", True)
                 subprocess.run(["/usr/sbin/tc", "-b", tc_up_name], check=True)
         else:
-            logp("Not loading mangle and tc due to --devel")
+            logp("Not loading mangle and tc due to --devel", True)
 
 hosts = Hosts()
 logfile = None
@@ -991,6 +1002,8 @@ parser.add_argument("-f", action="store_true",
                     help="force regenerate and reload nat and shaping even if no changes were detected")
 parser.add_argument("--dry-run", action="store_true",
                     help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
+parser.add_argument("-v", action="store_true",
+                    help="verbose printing of detailed steps (otherwise only logged to file)")
 parser.add_argument("-p", action="store_true",
                     help="only generate today.html, no nat.conf update or changes to nat or traffic shaping")
 parser.add_argument("-r", action="store_true",
@@ -1009,6 +1022,9 @@ if args.devel:
     config_prefix="."
 
 qos_conf_path=f"{config_prefix}{args.qos_conf}"
+
+if args.v:
+    verbose_prints = True
 
 if args.m:
     now = date.today()
@@ -1107,20 +1123,20 @@ try:
 
     log(f"Start qos2nat.py {timestamp}")
 
-    logp(f"Reading {qos_conf_path} ...")
+    logp(f"Reading {qos_conf_path} ...", True)
     with open(qos_conf_path, 'r') as qosconf:
         hosts.read_qos_conf(qosconf)
 
     nat_conf_pre = f"{config_prefix}{config_nat_backup}{timestamp}_pre"
 
-    logp(f"Creating nat.conf backup {nat_conf_pre}")
+    logp(f"Creating nat.conf backup {nat_conf_pre}", True)
     shutil.copyfile(f"{config_prefix}{config_nat_conf}", nat_conf_pre)
 
-    logp("Reading nat.conf...")
+    logp("Reading nat.conf...", True)
     with open(f"{nat_conf_pre}", 'r') as natconf:
         hosts.read_nat_conf(natconf)
 
-    logp("Calculating nat.conf updates:")
+    logp("Calculating nat.conf updates:", True)
     diffs = hosts.find_differences()
     if diffs > 0 or args.f:
         nat_conf_post = f"{config_prefix}{config_nat_backup}{timestamp}_post"
@@ -1128,7 +1144,7 @@ try:
         with open(nat_conf_pre, 'r') as natconf, open(nat_conf_post, 'w') as natconf_new:
             hosts.update_nat_conf(natconf, natconf_new)
 
-        logp("Reading nat.conf.new back to verify no more updates detected...")
+        logp("Reading nat.conf.new back to verify no more updates detected...", True)
         hosts.init_nat_conf()
         with open(nat_conf_post, 'r') as natconf:
             hosts.read_nat_conf(natconf)
@@ -1138,9 +1154,9 @@ try:
             logp(f"Found {check_diffs} more unexpected updates, aborting.")
             sys.exit(1)
         elif args.dry_run:
-            logp(f"No differences, but not replacing nat.conf due to --dry-run")
+            logp(f"No differences, but not replacing nat.conf due to --dry-run", True)
         else:
-            logp(f"No differences, replacing nat.conf with {nat_conf_post}")
+            logp(f"No differences, replacing nat.conf with {nat_conf_post}", True)
             shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
     else:
         if not args.f:
@@ -1155,7 +1171,7 @@ try:
             nat_up_nft_name = "/tmp/nat.up.nft"
         else:
             nat_up_nft_name = f"{config_prefix}{config_nat_up}.nft"
-        logpc(f"Writing {nat_up_nft_name} ")
+        logpc(f"Writing {nat_up_nft_name} ", True)
         with open(f"{config_prefix}{config_nat_global}.nft", 'r') as nat_global_nft, open(nat_up_nft_name, 'w') as nat_up_nft:
             for line in nat_global_nft:
                 nat_up_nft.write(line)
@@ -1165,7 +1181,7 @@ try:
             nat_up_name = "/tmp/nat.up"
         else:
             nat_up_name = f"{config_prefix}{config_nat_up}"
-        logpc(f"Writing {nat_up_name} ")
+        logpc(f"Writing {nat_up_name} ", True)
         with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
             nat_up.write("# generated by qos2nat.py\n")
             for line in nat_global:
@@ -1176,7 +1192,7 @@ try:
         portmap_name = "/tmp/portmap.txt"
     else:
         portmap_name = f"{config_prefix}{config_portmap}"
-    logpc(f"{portmap_name} ")
+    logpc(f"{portmap_name} ", True)
     with open(portmap_name, 'w') as portmap:
         hosts.write_portmap(portmap)
 
@@ -1186,31 +1202,31 @@ try:
     else:
         dns_db_name = f"{config_prefix}{config_dns_db}"
         dns_rev_db_name = f"{config_prefix}{config_dns_rev_db}"
-    logpc(f"{dns_db_name} ")
+    logpc(f"{dns_db_name} ", True)
     with open(dns_db_name, 'w') as db:
         hosts.write_dns_hosts(db)
 
-    logp(f"{dns_rev_db_name}")
+    logp(f"{dns_rev_db_name}", True)
     with open(dns_rev_db_name, 'w') as db:
         hosts.write_dns_reverse(db)
 
     if not args.devel:
         if not args.iptables:
             if args.dry_run:
-                logp("Testing (no commit) nat.up.nft via nft -t ... ")
+                logp("Testing (no commit) nat.up.nft via nft -t ... ", True)
                 subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
             else:
-                logp("Loading new nat.up.nft")
+                logp("Loading new nat.up.nft", True)
                 subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
         else:
             if args.dry_run:
-                logp("Testing (no commit) nat.up via iptables-restore ... ")
+                logp("Testing (no commit) nat.up via iptables-restore ... ", True)
                 subprocess.run(["/usr/sbin/iptables-restore", "-t", nat_up_name], check=True)
             else:
-                logp("Loading new nat.up to iptables")
+                logp("Loading new nat.up to iptables", True)
                 subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
     else:
-        logp("Skipping iptables-restore due to --devel")
+        logp("Skipping iptables-restore due to --devel", True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         get_mangle_stats(tmpdir)
