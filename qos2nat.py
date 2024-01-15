@@ -150,6 +150,8 @@ class Hosts:
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
         self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
+        # ips of users with nonat - should be deleted
+        self.nat_conf_ips_no_shaping = set()
         # to clean up after bug duplicating nat.conf * * entries
         self.nat_conf_ip_already_written = set()
 
@@ -221,13 +223,14 @@ class Hosts:
 
         self.users.add(user)
         self.ip2user[ip] = user
-        if shaping is not None:
+        if host == user:
             if user in self.user2shaping:
                 raise ConfError(f"Multiple via-prometheus lines for user {user}: "
                                    f"{self.user2shaping[user]} and {shaping}")
             self.user2shaping[user] = shaping
             self.user2ip[user] = ip
-            self.user2classid[user] = self.get_classid()
+            if shaping is not None:
+                self.user2classid[user] = self.get_classid()
 
     def read_qos_conf(self, qosconf):
 
@@ -264,16 +267,20 @@ class Hosts:
                 if ip not in self.local_network:
                     raise ConfError(f"IP {ip} not in local network {self.local_network}")
 
-                m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
-                if m:
+                if shaping == 'nonat':
                     user = host
-                    shaping = (int(m.group(1)), int(m.group(2)))
-                else:
-                    m = re.match(r"sharing-([\S]+)", shaping)
-                    if not m:
-                        raise ConfError(f"unknown shaping: {shaping}")
-                    user = m.group(1)
                     shaping = None
+                else:
+                    m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
+                    if m:
+                        user = host
+                        shaping = (int(m.group(1)), int(m.group(2)))
+                    else:
+                        m = re.match(r"sharing-([\S]+)", shaping)
+                        if not m:
+                            raise ConfError(f"unknown shaping: {shaping}")
+                        user = m.group(1)
+                        shaping = None
 
                 self.add_qos(ip, host, user, shaping)
             except ConfError as e:
@@ -344,6 +351,8 @@ class Hosts:
                     logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
             else:
                 self.ipuser2pubip[ipuser] = pubip
+            if self.user2shaping[ipuser] is None:
+                self.nat_conf_ips_no_shaping.add(ip)
 
         if user in self.user2pubip:
             pubip_other = self.user2pubip[user]
@@ -463,20 +472,24 @@ class Hosts:
         found = 0
 
         for ip in self.ip2pubip:
-            if ip not in self.ip2host:
+            if ip not in self.ip2host or ip in self.nat_conf_ips_no_shaping:
+                if ip not in self.ip2host:
+                    reason = "not found in qos.conf"
+                else:
+                    reason = "nonat"
                 found += 1
                 fwds = ""
                 if ip in self.ip2portfwd:
                     fwds = f", including {len(self.ip2portfwd[ip])} defined port forwards"
                 pubip = self.ip2pubip[ip]
                 user = self.pubip2user[pubip]
-                if user in self.user2ip:
+                if ip not in self.ip2host and user in self.user2ip:
                     newIp = self.user2ip[user]
                     if newIp not in self.ip2pubip:
                         logp(f"User {user} (public IP {pubip}): changing primary local IP from {ip} to {newIp}{fwds}")
                         self.nat_conf_ips_to_change[ip] = newIp
                         continue
-                logp(f"User {user} (public IP {pubip}): removing local IP {ip}{fwds}")
+                logp(f"Removing nat.conf entry from {pubip} to {ip} for user {user} (because {reason}){fwds}")
                 self.nat_conf_ips_to_delete.add(ip)
             elif ip in self.nat_conf_user_renames:
                 found += 1
@@ -512,6 +525,9 @@ class Hosts:
                     continue
                 host = self.ip2host[ip]
                 user = self.ip2user[ip]
+                if self.user2shaping[user] is None:
+                    found -= 1
+                    continue
                 if user in self.user2ip and self.user2ip[user] in self.ip2pubip:
                     pubip = self.ip2pubip[self.user2ip[user]]
                     info = f"with existing user's public IP {pubip}"
@@ -682,6 +698,8 @@ class Hosts:
             out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 1950000kbit ceil 1950000kbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
 
         for (user, shaping) in self.user2shaping.items():
+            if shaping is None:
+                continue
             (rate, ceil) = shaping
             classid = self.get_user_classid(user)
             for dev in (config_dev_lan, config_dev_wan):
