@@ -150,7 +150,7 @@ class Hosts:
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
         self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
-        # ips of users with nonat - should be deleted
+        # ips of users with private - should be deleted
         self.nat_conf_ips_no_shaping = set()
         # to clean up after bug duplicating nat.conf * * entries
         self.nat_conf_ip_already_written = set()
@@ -267,7 +267,7 @@ class Hosts:
                 if ip not in self.local_network:
                     raise ConfError(f"IP {ip} not in local network {self.local_network}")
 
-                if shaping == 'nonat':
+                if shaping == 'private':
                     user = host
                     shaping = None
                 else:
@@ -476,7 +476,7 @@ class Hosts:
                 if ip not in self.ip2host:
                     reason = "not found in qos.conf"
                 else:
-                    reason = "nonat"
+                    reason = "marked private"
                 found += 1
                 fwds = ""
                 if ip in self.ip2portfwd:
