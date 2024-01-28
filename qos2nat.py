@@ -904,7 +904,7 @@ class Hosts:
                 ceil = 0
             down = self.ip2download[ip]
             up = self.ip2upload[ip]
-            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(f"<a href=\"http://10.92.0.139:3000/lua/host_details.lua?host={ip}\">{ip}</a>"), tdr(f"<b>{human(traffic)}</b>"),\
+            html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(f"{ip}"), tdr(f"<b>{human(traffic)}</b>"),\
                            tdr(human(down)), tdr(human(up)), tdr(f"{humankbps(ceil)}"))))
         html.write("</table>\n")
 
