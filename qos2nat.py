@@ -14,7 +14,6 @@ from collections import defaultdict
 import time
 from datetime import datetime, date
 
-config_local_network = "10.92.0.0/16"
 config_public_networks = [
         "89.203.128.0/24",
         "89.203.138.0/24",
@@ -169,6 +168,7 @@ class Hosts:
 
         # from qos.conf config
         self.conf_uplink_mbit = None
+        self.local_network = None
 
         # from iptables stats
         self.ip2download = dict()
@@ -183,7 +183,6 @@ class Hosts:
         self.last_classid = 2089
         self.user2classid = dict()
 
-        self.local_network = ip_network(config_local_network)
         self.all_public_ips = set()
         for net_str in config_public_networks:
             net = ip_network(net_str)
@@ -264,15 +263,19 @@ class Hosts:
                     if section == "hosts":
                         if self.conf_uplink_mbit is None:
                             raise ConfError(f"missing uplink_mbit=$num in [config]")
+                        if not self.local_network:
+                            raise ConfError(f"missing lan_range=\"$range\" in [config]")
                     continue
 
                 if section is None:
                     raise ConfError(f"no qos.conf [section] specified")
 
                 if section == "config":
-                    m = re.match(r"([\S]+)=([\S]+)", line)
+                    m = re.match(r"([\S]+)=\"([\S]+)\"", line)
                     if not m:
-                        raise ConfError(f"did not match key=value expected in [config]: {line}")
+                        m = re.match(r"([\S]+)=([\S]+)", line)
+                        if not m:
+                            raise ConfError(f"did not match key=value expected in [config]: {line}")
                     key = m.group(1)
                     val = m.group(2)
                     if key == "uplink_mbit":
@@ -281,6 +284,11 @@ class Hosts:
                             self.conf_uplink_mbit = mbits
                         except ValueError as e:
                             raise ConfError(f"could not parse uplink_mbit value: {e}")
+                    elif key == "lan_range":
+                        try:
+                            self.local_network = ip_network(val)
+                        except ValueError as e:
+                            raise ConfError(f"could not parse lan_range value: {e}")
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
