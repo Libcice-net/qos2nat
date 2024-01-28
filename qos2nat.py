@@ -663,6 +663,8 @@ class Hosts:
             db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
 
     def write_nft_mangle(self, out, reset_stats):
+        localnet = self.local_network
+
         out.write("add table ip mangle\n")
         out.write("delete table ip mangle\n")
         out.write("add table ip mangle\n")
@@ -698,17 +700,19 @@ class Hosts:
         out.write("add chain ip mangle post_common\n")
         out.write("add rule ip mangle post_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
         out.write("add chain ip mangle forward { type filter hook forward priority -150; policy accept; }\n")
-        out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" ip daddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" ip daddr {localnet} counter packets 0 bytes 0 accept\n")
         out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" ip saddr vmap @forw_map\n")
         out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" counter packets 0 bytes 0 jump forw_common\n")
 
         out.write("add chain ip mangle postrouting { type filter hook postrouting priority -150; policy accept; }\n")
-        out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip saddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip saddr {localnet} counter packets 0 bytes 0 accept\n")
         out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip daddr vmap @post_map\n")
         out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" counter packets 0 bytes 0 jump post_common\n")
 
 
     def write_iptables_mangle(self, out):
+        localnet = self.local_network
+
         out.write("*mangle\n")
         out.write(":PREROUTING ACCEPT [0:0]\n")
         out.write(":POSTROUTING ACCEPT [0:0]\n")
@@ -716,8 +720,8 @@ class Hosts:
         out.write(":OUTPUT ACCEPT [0:0]\n")
         out.write(":FORWARD ACCEPT [0:0]\n")
         # TODO config
-        out.write(f"-A FORWARD -d 10.0.0.0/8 -o {self.dev_wan} -j ACCEPT\n")
-        out.write(f"-A POSTROUTING -s 10.0.0.0/8 -o {self.dev_wan} -j ACCEPT\n")
+        out.write(f"-A FORWARD -d {localnet} -o {self.dev_wan} -j ACCEPT\n")
+        out.write(f"-A POSTROUTING -s {localnet} -o {self.dev_wan} -j ACCEPT\n")
 
         for (ip, user) in self.ip2user.items():
             if user not in self.user2shaping:
