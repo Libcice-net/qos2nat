@@ -14,12 +14,6 @@ from collections import defaultdict
 import time
 from datetime import datetime, date
 
-config_public_networks = [
-        "89.203.128.0/24",
-        "89.203.138.0/24",
-        "195.146.116.0/24",
-]
-
 # for debugging/development
 config_prefix=""
 
@@ -169,6 +163,7 @@ class Hosts:
         # from qos.conf config
         self.conf_uplink_mbit = None
         self.local_network = None
+        self.all_public_ips = set()
 
         # from iptables stats
         self.ip2download = dict()
@@ -182,11 +177,6 @@ class Hosts:
 
         self.last_classid = 2089
         self.user2classid = dict()
-
-        self.all_public_ips = set()
-        for net_str in config_public_networks:
-            net = ip_network(net_str)
-            self.all_public_ips.update(net.hosts())
 
         self.init_nat_conf()
 
@@ -265,6 +255,8 @@ class Hosts:
                             raise ConfError(f"missing uplink_mbit=$num in [config]")
                         if not self.local_network:
                             raise ConfError(f"missing lan_range=\"$range\" in [config]")
+                        if len(self.all_public_ips) == 0:
+                            raise ConfError(f"missing wan_ranges=\"$range1,$range2...\" in [config]")
                     continue
 
                 if section is None:
@@ -289,6 +281,13 @@ class Hosts:
                             self.local_network = ip_network(val)
                         except ValueError as e:
                             raise ConfError(f"could not parse lan_range value: {e}")
+                    elif key == "wan_ranges":
+                        try:
+                            for net_str in val.split(","):
+                                net = ip_network(net_str)
+                                self.all_public_ips.update(net.hosts())
+                        except ValueError as e:
+                            raise ConfError(f"could not parse wan_ranges value: {e}")
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
@@ -471,7 +470,7 @@ class Hosts:
                 raise ConfError(f"Error parsing nat.conf line {line_num}: local IP {ip} not in local network {self.local_network}")
 
             if pubip not in self.all_public_ips:
-                raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in libcice.net ranges")
+                raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in defined wan_ranges")
 
             if natconf_new:
                 self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new)
