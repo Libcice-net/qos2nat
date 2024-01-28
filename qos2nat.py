@@ -34,9 +34,6 @@ config_logdir = "/var/www/logs/"
 config_dns_db = "/etc/admin_tools/libcice.db.new"
 config_dns_rev_db = "/etc/admin_tools/92.10.db.new"
 
-config_dev_lan="eno1"
-config_dev_wan="eno2"
-
 logfile = None
 
 errors_not_fatal = False
@@ -164,6 +161,8 @@ class Hosts:
         self.conf_uplink_mbit = None
         self.local_network = None
         self.all_public_ips = set()
+        self.dev_lan = None
+        self.dev_wan = None
 
         # from iptables stats
         self.ip2download = dict()
@@ -257,6 +256,10 @@ class Hosts:
                             raise ConfError(f"missing lan_range=\"$range\" in [config]")
                         if len(self.all_public_ips) == 0:
                             raise ConfError(f"missing wan_ranges=\"$range1,$range2...\" in [config]")
+                        if not self.dev_lan:
+                            raise ConfError(f"missing lan_dev=\"$dev\" in [config]")
+                        if not self.dev_wan:
+                            raise ConfError(f"missing wan_dev=\"$dev\" in [config]")
                     continue
 
                 if section is None:
@@ -288,6 +291,10 @@ class Hosts:
                                 self.all_public_ips.update(net.hosts())
                         except ValueError as e:
                             raise ConfError(f"could not parse wan_ranges value: {e}")
+                    elif key == "lan_dev":
+                        self.dev_lan = val
+                    elif key == "wan_dev":
+                        self.dev_wan = val
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
@@ -691,14 +698,14 @@ class Hosts:
         out.write("add chain ip mangle post_common\n")
         out.write("add rule ip mangle post_common counter packets 0 bytes 0 meta priority set 1:3 accept\n")
         out.write("add chain ip mangle forward { type filter hook forward priority -150; policy accept; }\n")
-        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" ip daddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
-        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" ip saddr vmap @forw_map\n")
-        out.write(f"add rule ip mangle forward oifname \"{config_dev_wan}\" counter packets 0 bytes 0 jump forw_common\n")
+        out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" ip daddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" ip saddr vmap @forw_map\n")
+        out.write(f"add rule ip mangle forward oifname \"{self.dev_wan}\" counter packets 0 bytes 0 jump forw_common\n")
 
         out.write("add chain ip mangle postrouting { type filter hook postrouting priority -150; policy accept; }\n")
-        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" ip saddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
-        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" ip daddr vmap @post_map\n")
-        out.write(f"add rule ip mangle postrouting oifname \"{config_dev_lan}\" counter packets 0 bytes 0 jump post_common\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip saddr 10.0.0.0/8 counter packets 0 bytes 0 accept\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip daddr vmap @post_map\n")
+        out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" counter packets 0 bytes 0 jump post_common\n")
 
 
     def write_iptables_mangle(self, out):
@@ -709,31 +716,31 @@ class Hosts:
         out.write(":OUTPUT ACCEPT [0:0]\n")
         out.write(":FORWARD ACCEPT [0:0]\n")
         # TODO config
-        out.write(f"-A FORWARD -d 10.0.0.0/8 -o {config_dev_wan} -j ACCEPT\n")
-        out.write(f"-A POSTROUTING -s 10.0.0.0/8 -o eno1 -j ACCEPT\n")
+        out.write(f"-A FORWARD -d 10.0.0.0/8 -o {self.dev_wan} -j ACCEPT\n")
+        out.write(f"-A POSTROUTING -s 10.0.0.0/8 -o {self.dev_wan} -j ACCEPT\n")
 
         for (ip, user) in self.ip2user.items():
             if user not in self.user2shaping:
                 logp(f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
             classid = self.get_user_classid(user)
-            post = f"-A POSTROUTING -d {ip} -o {config_dev_lan}"
-            forw = f"-A FORWARD -s {ip} -o {config_dev_wan}"
+            post = f"-A POSTROUTING -d {ip} -o {self.dev_lan}"
+            forw = f"-A FORWARD -s {ip} -o {self.dev_wan}"
             for match in (post, forw):
                 out.write(f"{match} -j CLASSIFY --set-class 1:{classid}\n")
                 out.write(f"{match} -j ACCEPT\n")
 
-        out.write(f"-A POSTROUTING -o {config_dev_lan} -j CLASSIFY --set-class 1:3\n")
-        out.write(f"-A POSTROUTING -o {config_dev_lan} -j ACCEPT\n")
-        out.write(f"-A FORWARD -o {config_dev_wan} -j CLASSIFY --set-class 1:3\n")
-        out.write(f"-A FORWARD -o {config_dev_wan} -j ACCEPT\n")
+        out.write(f"-A POSTROUTING -o {self.dev_lan} -j CLASSIFY --set-class 1:3\n")
+        out.write(f"-A POSTROUTING -o {self.dev_lan} -j ACCEPT\n")
+        out.write(f"-A FORWARD -o {self.dev_wan} -j CLASSIFY --set-class 1:3\n")
+        out.write(f"-A FORWARD -o {self.dev_wan} -j ACCEPT\n")
         out.write("COMMIT\n")
 
     def write_tc_up(self, out):
         top_mbit = self.conf_uplink_mbit
         sub_mbit = int(top_mbit * 0.975)
 
-        for dev in (config_dev_lan, config_dev_wan):
+        for dev in (self.dev_lan, self.dev_wan):
             out.write(f"qdisc add dev {dev} root handle 1: htb r2q 5 default 1\n")
             out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate {top_mbit}Mbit ceil {top_mbit}Mbit burst 14300k cburst 14300k prio 0 quantum 20000\n")
             out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate {sub_mbit}Mbit ceil {sub_mbit}Mbit burst 10300k cburst 10300k prio 0 quantum 20000\n")
@@ -744,11 +751,11 @@ class Hosts:
                 continue
             (rate, ceil) = shaping
             classid = self.get_user_classid(user)
-            for dev in (config_dev_lan, config_dev_wan):
+            for dev in (self.dev_lan, self.dev_wan):
                 out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate}kbit ceil {ceil}kbit burst 256k cburst 256k prio 1 quantum 1500\n")
                 out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
 
-        for dev in (config_dev_lan, config_dev_wan):
+        for dev in (self.dev_lan, self.dev_wan):
             out.write(f"class add dev {dev} parent 1:1025 classid 1:3 htb rate 64kbit ceil 128kbit burst 256k cburst 256k prio 7 quantum 1500\n")
             out.write(f"qdisc add dev {dev} parent 1:3 handle 3 fq_codel\n")
             out.write(f"filter add dev {dev} parent 1:0 protocol ip handle 3 fw flowid 1:3\n")
@@ -778,9 +785,9 @@ class Hosts:
 
                 (dev, sdaddr, ip, packets, _bytes, classid) = m.groups()
 
-                if dev == config_dev_lan and sdaddr == "daddr":
+                if dev == self.dev_lan and sdaddr == "daddr":
                     down = True
-                elif dev == config_dev_wan and sdaddr == "saddr":
+                elif dev == self.dev_wan and sdaddr == "saddr":
                     down = False
                 else:
                     continue
@@ -837,12 +844,12 @@ class Hosts:
             (pkts, _bytes, dev, src_ip, tgt_ip, classid) = m.groups()
 
             down = True
-            if dev == config_dev_lan and src_ip == "0.0.0.0/0":
+            if dev == self.dev_lan and src_ip == "0.0.0.0/0":
                 if tgt_ip == "0.0.0.0/0":
                     continue
                 ip = ip_address(tgt_ip)
 
-            elif dev == config_dev_wan and tgt_ip == "0.0.0.0/0":
+            elif dev == self.dev_wan and tgt_ip == "0.0.0.0/0":
                 if src_ip == "0.0.0.0/0":
                     continue
                 ip = ip_address(src_ip)
@@ -997,7 +1004,7 @@ def get_mangle_stats(tmpdir):
         with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
             hosts.read_iptables_stats(stats)
 
-def reload_shaping(tmpdir, reset_stats):
+def reload_shaping(hosts, tmpdir, reset_stats):
 
         if args.dry_run and not args.devel:
             mangle_up_name = "/tmp/mangle.up"
@@ -1012,7 +1019,7 @@ def reload_shaping(tmpdir, reset_stats):
             logpc(f"Writing {mangle_up_name} ", True)
             with open(mangle_up_name, 'w') as mangle:
                 hosts.write_iptables_mangle(mangle)
-        else: 
+        else:
             logpc(f"Writing {mangle_up_nft_name} ", True)
             with open(mangle_up_nft_name, 'w') as mangle:
                 hosts.write_nft_mangle(mangle, reset_stats)
@@ -1029,7 +1036,7 @@ def reload_shaping(tmpdir, reset_stats):
                 else:
                     logp(f"Loading {mangle_up_nft_name} via nft ... ", True)
                     subprocess.run(["/usr/sbin/nft", "-f", mangle_up_nft_name], check=True)
-            else: 
+            else:
                 if args.dry_run:
                     logp(f"Testing (no commit) {mangle_up_name} via iptables-restore ... ", True)
                     subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_up_name], check=True)
@@ -1039,7 +1046,7 @@ def reload_shaping(tmpdir, reset_stats):
 
             if not args.dry_run:
                 logpc("Flushing old tc rules ... ", True)
-                for dev in [config_dev_lan, config_dev_wan]:
+                for dev in [hosts.dev_lan, hosts.dev_wan]:
                     subprocess.run(["/sbin/tc", "qdisc", "del", "dev", dev, "root"])
             else:
                 logp("Not flushing old tc rules due to dry run.", True)
@@ -1169,7 +1176,7 @@ if args.r:
             else:
                 logp(f"Skipped writing host logs due to --dry run")
 
-            reload_shaping(tmpdir, True)
+            reload_shaping(hosts, tmpdir, True)
 
         sys.exit(0)
     except ConfError as e:
@@ -1291,7 +1298,7 @@ try:
     with tempfile.TemporaryDirectory() as tmpdir:
         get_mangle_stats(tmpdir)
 
-        reload_shaping(tmpdir, False)
+        reload_shaping(hosts, tmpdir, False)
 
     logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
          f"remaining public IPs: {len(hosts.free_public_ips)}")
