@@ -167,6 +167,9 @@ class Hosts:
         self.user2shaping = dict()
         self.users = set()
 
+        # from qos.conf config
+        self.conf_uplink_mbit = None
+
         # from iptables stats
         self.ip2download = dict()
         self.ip2upload = dict()
@@ -234,6 +237,9 @@ class Hosts:
 
     def read_qos_conf(self, qosconf):
 
+        valid_sections = set(["hosts", "config"])
+        section = None
+
         line_num = 0
         for line in qosconf:
             line_num += 1
@@ -250,6 +256,35 @@ class Hosts:
                 continue
 
             try:
+                m = re.match(r"\[([\S]+)\]", line)
+                if m:
+                    section = m.group(1)
+                    if section not in valid_sections:
+                        raise ConfError(f"invalid qos.conf section: {line}")
+                    if section == "hosts":
+                        if self.conf_uplink_mbit is None:
+                            raise ConfError(f"missing uplink_mbit=$num in [config]")
+                    continue
+
+                if section is None:
+                    raise ConfError(f"no qos.conf [section] specified")
+
+                if section == "config":
+                    m = re.match(r"([\S]+)=([\S]+)", line)
+                    if not m:
+                        raise ConfError(f"did not match key=value expected in [config]: {line}")
+                    key = m.group(1)
+                    val = m.group(2)
+                    if key == "uplink_mbit":
+                        try:
+                            mbits = int(val)
+                            self.conf_uplink_mbit = mbits
+                        except ValueError as e:
+                            raise ConfError(f"could not parse uplink_mbit value: {e}")
+                    else:
+                        raise ConfError(f"unknown key=value in [config]: {line}")
+                    continue
+
                 m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
                 if not m:
                     raise ConfError(f"regex failed: {line}")
@@ -688,14 +723,14 @@ class Hosts:
         out.write("COMMIT\n")
 
     def write_tc_up(self, out):
+        top_mbit = self.conf_uplink_mbit
+        sub_mbit = int(top_mbit * 0.975)
+
         for dev in (config_dev_lan, config_dev_wan):
             out.write(f"qdisc add dev {dev} root handle 1: htb r2q 5 default 1\n")
-            #out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 2000Mbit ceil 2000Mbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
-            #out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 1950000kbit ceil 1950000kbit burst 1300k cburst 1300k prio 0 quantum 20000\n")
-            #out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 1950000kbit ceil 1950000kbit burst 1300k cburst 1300k prio 1 quantum 20000\n")
-            out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate 2000Mbit ceil 2000Mbit burst 14300k cburst 14300k prio 0 quantum 20000\n")
-            out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate 1950000kbit ceil 1950000kbit burst 10300k cburst 10300k prio 0 quantum 20000\n")
-            out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate 1950000kbit ceil 1950000kbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1: classid 1:2 htb rate {top_mbit}Mbit ceil {top_mbit}Mbit burst 14300k cburst 14300k prio 0 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1:2 classid 1:1 htb rate {sub_mbit}Mbit ceil {sub_mbit}Mbit burst 10300k cburst 10300k prio 0 quantum 20000\n")
+            out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate {sub_mbit}bit ceil {sub_mbit}Mbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
 
         for (user, shaping) in self.user2shaping.items():
             if shaping is None:
