@@ -31,9 +31,6 @@ config_html_preview = "/var/www/today.html"
 config_html_day = "/var/www/yesterday.html"
 config_logdir = "/var/www/logs/"
 
-config_dns_db = "/etc/admin_tools/libcice.db.new"
-config_dns_rev_db = "/etc/admin_tools/92.10.db.new"
-
 logfile = None
 
 errors_not_fatal = False
@@ -163,6 +160,9 @@ class Hosts:
         self.all_public_ips = set()
         self.dev_lan = None
         self.dev_wan = None
+        self.dns_private_domain = None
+        self.dns_db = None
+        self.dns_rev_db = None
 
         # from iptables stats
         self.ip2download = dict()
@@ -260,6 +260,12 @@ class Hosts:
                             raise ConfError(f"missing lan_dev=\"$dev\" in [config]")
                         if not self.dev_wan:
                             raise ConfError(f"missing wan_dev=\"$dev\" in [config]")
+                        if not self.dns_private_domain:
+                            raise ConfError(f"missing dns_private_domain=\"example.tld\" in [config]")
+                        if not self.dns_db:
+                            raise ConfError(f"missing dns_db=\"/path/to/$domain.db\" in [config]")
+                        if not self.dns_rev_db:
+                            raise ConfError(f"missing dns_rev_db=\"/path/to/$ip.db\" in [config]")
                     continue
 
                 if section is None:
@@ -295,6 +301,12 @@ class Hosts:
                         self.dev_lan = val
                     elif key == "wan_dev":
                         self.dev_wan = val
+                    elif key == "dns_private_domain":
+                        self.dns_private_domain = val
+                    elif key == "dns_db":
+                        self.dns_db = val
+                    elif key == "dns_rev_db":
+                        self.dns_rev_db = val
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
@@ -660,7 +672,7 @@ class Hosts:
                 db.write(";##################################################\n")
                 db.write(f"$ORIGIN               {ipp[2]}.{ipp[1]}.{ipp[0]}.in-addr.arpa.\n")
             host = host.replace("_", "-")
-            db.write(f"{ip.packed[3]:<14} IN PTR          {host}.libcice.czf.\n")
+            db.write(f"{ip.packed[3]:<14} IN PTR          {host}.{self.dns_private_domain}.\n")
 
     def write_nft_mangle(self, out, reset_stats):
         localnet = self.local_network
@@ -1268,11 +1280,11 @@ try:
         hosts.write_portmap(portmap)
 
     if args.dry_run:
-        dns_db_name = "/tmp/libcice.db.new"
-        dns_rev_db_name = "/tmp/92.10.db.new"
+        dns_db_name = "/tmp/dns.db"
+        dns_rev_db_name = "/tmp/dns_rev.db"
     else:
-        dns_db_name = f"{config_prefix}{config_dns_db}"
-        dns_rev_db_name = f"{config_prefix}{config_dns_rev_db}"
+        dns_db_name = f"{config_prefix}{hosts.dns_db}"
+        dns_rev_db_name = f"{config_prefix}{hosts.dns_rev_db}"
     logpc(f"{dns_db_name} ", True)
     with open(dns_db_name, 'w') as db:
         hosts.write_dns_hosts(db)
