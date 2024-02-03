@@ -142,8 +142,6 @@ class Hosts:
         # to clean up after bug duplicating nat.conf * * entries
         self.nat_conf_ip_already_written = set()
 
-        self.free_public_ips = set(self.all_public_ips)
-
     def __init__(self):
 
         # from qos.conf
@@ -349,6 +347,8 @@ class Hosts:
                 if not errors_not_fatal:
                     raise ConfError(err)
                 logpe(err)
+
+        self.free_public_ips = set(self.all_public_ips)
 
         for user in self.users:
             if user not in self.user2shaping:
