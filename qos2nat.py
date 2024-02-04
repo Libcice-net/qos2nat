@@ -161,6 +161,7 @@ class Hosts:
         self.dns_private_domain = None
         self.dns_db = None
         self.dns_rev_db = None
+        self.shaping_classes = dict()
 
         # from iptables stats
         self.ip2download = dict()
@@ -191,7 +192,7 @@ class Hosts:
         if classid > self.last_classid:
             self.last_classid = classid
 
-    def add_qos(self, ip, host, user, shaping = None):
+    def add_qos(self, ip, host, user, shaping):
         if ip in self.ip2host:
             host_other = self.ip2host[ip]
             logpe(f"Warning: Duplicate IP in qos.conf: {ip} is hosts {host_other} and {host}")
@@ -214,8 +215,8 @@ class Hosts:
         self.ip2user[ip] = user
         if host == user:
             if user in self.user2shaping:
-                raise ConfError(f"Multiple via-prometheus lines for user {user}: "
-                                   f"{self.user2shaping[user]} and {shaping}")
+                raise ConfError(f"Multiple shaping non-sharing definitions for user {user}: "
+                                   f"{self.user2shaping[user]} and {shaping} for ip {ip}")
             self.user2shaping[user] = shaping
             self.user2ip[user] = ip
             if shaping is not None:
@@ -223,7 +224,7 @@ class Hosts:
 
     def read_qos_conf(self, qosconf):
 
-        valid_sections = set(["hosts", "config"])
+        valid_sections = set(["hosts", "config", "classes"])
         section = None
 
         line_num = 0
@@ -308,6 +309,17 @@ class Hosts:
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
+                elif section == "classes":
+                    if m := re.match(r"([\S]+)=\"([\S]+)\"", line):
+                        pass
+                    elif m := re.match(r"([\S]+)=([\S]+)", line):
+                        pass
+                    else:
+                        raise ConfError(f"did not match key=value expected in [classes]: {line}")
+                    cls = m.group(1)
+                    speed = m.group(2)
+                    self.shaping_classes[cls] = speed
+                    continue
 
                 m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
                 if not m:
@@ -330,16 +342,21 @@ class Hosts:
                     user = host
                     shaping = None
                 else:
-                    m = re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping)
-                    if m:
+                    if m := re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping):
                         user = host
-                        shaping = (int(m.group(1)), int(m.group(2)))
-                    else:
-                        m = re.match(r"sharing-([\S]+)", shaping)
-                        if not m:
-                            raise ConfError(f"unknown shaping: {shaping}")
+                        speeds = (int(m.group(1)), int(m.group(2)))
+                        shaping = ("legacy", speeds)
+                    elif m := re.match(r"class-([\S]+)", shaping):
+                        cls = m.group(1)
+                        if cls not in self.shaping_classes:
+                            raise ConfError(f"unknown shaping class: {shaping}")
+                        user = host
+                        shaping = ("class", cls)
+                    elif m := re.match(r"sharing-([\S]+)", shaping):
                         user = m.group(1)
                         shaping = None
+                    else:
+                        raise ConfError(f"unknown shaping: {shaping}")
 
                 self.add_qos(ip, host, user, shaping)
             except ConfError as e:
@@ -765,10 +782,21 @@ class Hosts:
         for (user, shaping) in self.user2shaping.items():
             if shaping is None:
                 continue
-            (rate, ceil) = shaping
+            (_type, details) = shaping
+            if _type == "legacy":
+                (rate, ceil) = details
+                rate = f"{rate}kbit"
+                ceil = f"{ceil}kbit"
+            elif _type == "class":
+                cls = details
+                #TODO: scale with ceil?
+                rate = "200kbit"
+                ceil = self.shaping_classes[cls]
+            else:
+                raise RuntimeError(f"Unknown shaping {shaping} for user {user}")
             classid = self.get_user_classid(user)
             for dev in (self.dev_lan, self.dev_wan):
-                out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate}kbit ceil {ceil}kbit burst 256k cburst 256k prio 1 quantum 1500\n")
+                out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate} ceil {ceil} burst 256k cburst 256k prio 1 quantum 1500\n")
                 out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
 
         for dev in (self.dev_lan, self.dev_wan):
