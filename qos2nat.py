@@ -187,6 +187,18 @@ class Hosts:
             self.user2classid[user] = self.get_classid()
         return self.user2classid[user]
 
+    def get_shaping_ceilh(self, shaping):
+        (_type, details) = shaping
+        if _type == "legacy":
+            (_, ceil) = details
+            ceil = humankbps(ceil)
+        elif _type == "class":
+            cls = details
+            ceil = self.shaping_classes[cls]
+        else:
+            raise RuntimeError(f"Unknown shaping {shaping}")
+        return ceil
+
     def set_user_classid(self, user, classid):
         self.user2classid[user] = classid
         if classid > self.last_classid:
@@ -938,14 +950,14 @@ class Hosts:
             else:
                 hostuser = f"<a href=\"logs/{host}.log\"><b>{host}</b></a> (<a href=\"logs/{user}.log\">{user}</a>)"
             try:
-                (rate, ceil) = self.user2shaping[user]
+                shaping = self.user2shaping[user]
+                ceil = self.get_shaping_ceilh(shaping)
             except KeyError:
-                rate = 0
                 ceil = 0
             down = self.ip2download[ip]
             up = self.ip2upload[ip]
             html.write(tr((tdr(f"<a name=\"{host}\">{num}</a>"), td(hostuser), td(f"{ip}"), tdr(f"<b>{human(traffic)}</b>"),\
-                           tdr(human(down)), tdr(human(up)), tdr(f"{humankbps(ceil)}"))))
+                           tdr(human(down)), tdr(human(up)), tdr(ceil))))
         html.write("</table>\n")
 
     def write_monthyear_html(self, html, header):
@@ -972,9 +984,10 @@ class Hosts:
             down = self.ip2download[ip] // (1024*1024)
             up = self.ip2upload[ip] // (1024*1024)
             traffic = traffic // (1024*1024)
-            (rate, ceil) = self.user2shaping[user]
+            shaping = self.user2shaping[user]
+            ceil = self.get_shaping_ceilh(shaping)
             with open(f"{config_prefix}{config_logdir}/{host}.log", 'a') as log:
-                log.write(f"{now}\t{host}\t{traffic}\t{down}\t0\t{up}\t{rate}\t{ceil}\t{ceil}\t{timestamp}\n")
+                log.write(f"{now}\t{host}\t{traffic}\t{down}\t0\t{up}\trate\t{ceil}\t{ceil}\t{timestamp}\n")
 
     def read_host_log(self, log, ts_start, ts_end):
         stat_host = ""
