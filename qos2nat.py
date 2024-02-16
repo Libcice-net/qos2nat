@@ -150,6 +150,8 @@ class Hosts:
         self.ip2user = dict()
         self.user2ip = dict()
         self.user2shaping = dict()
+        self.users_with_subclasses = set()
+        self.ip2shaping = dict()
         self.users = set()
 
         # from qos.conf config
@@ -175,6 +177,8 @@ class Hosts:
 
         self.last_classid = 2089
         self.user2classid = dict()
+        self.user2superclassid = dict()
+        self.ip2classid = dict()
 
         self.init_nat_conf()
 
@@ -233,6 +237,10 @@ class Hosts:
             self.user2ip[user] = ip
             if shaping is not None:
                 self.user2classid[user] = self.get_classid()
+        elif shaping is not None:
+            self.ip2shaping[ip] = shaping
+            self.ip2classid[ip] = self.get_classid()
+            self.users_with_subclasses.add(user)
 
     def read_qos_conf(self, qosconf):
 
@@ -353,20 +361,24 @@ class Hosts:
                 if shaping == 'private':
                     user = host
                     shaping = None
+                elif m := re.match(r"sharing-([\S]+),([\S]+)", shaping):
+                    user = m.group(1)
+                    shaping = m.group(2)
+                elif m := re.match(r"sharing-([\S]+)", shaping):
+                    user = m.group(1)
+                    shaping = None
                 else:
+                    user = host
+
+                if shaping is not None:
                     if m := re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping):
-                        user = host
                         speeds = (int(m.group(1)), int(m.group(2)))
                         shaping = ("legacy", speeds)
                     elif m := re.match(r"class-([\S]+)", shaping):
                         cls = m.group(1)
                         if cls not in self.shaping_classes:
                             raise ConfError(f"unknown shaping class: {shaping}")
-                        user = host
                         shaping = ("class", cls)
-                    elif m := re.match(r"sharing-([\S]+)", shaping):
-                        user = m.group(1)
-                        shaping = None
                     else:
                         raise ConfError(f"unknown shaping: {shaping}")
 
@@ -717,7 +729,10 @@ class Hosts:
             if user not in self.user2shaping:
                 log(f"skip ip {ip} of user {user} due to no defined shaping")
                 continue
-            classid = self.get_user_classid(user)
+            if ip in self.ip2classid:
+                classid = self.ip2classid[ip]
+            else:
+                classid = self.get_user_classid(user)
 
             ipstr = str(ip).replace(".", "_")
             for prefix in ("post", "forw"):
@@ -781,6 +796,27 @@ class Hosts:
         out.write(f"-A FORWARD -o {self.dev_wan} -j ACCEPT\n")
         out.write("COMMIT\n")
 
+    def __write_tc_shaping(self, out, classid, parent, shaping, qdisc = True):
+        if shaping is None:
+            return
+        (_type, details) = shaping
+        if _type == "legacy":
+            (rate, ceil) = details
+            rate = f"{rate}kbit"
+            ceil = f"{ceil}kbit"
+        elif _type == "class":
+            cls = details
+            #TODO: scale with ceil?
+            rate = "200kbit"
+            ceil = self.shaping_classes[cls]
+        else:
+            raise RuntimeError(f"Unknown shaping {shaping}")
+        for dev in (self.dev_lan, self.dev_wan):
+            out.write(f"class add dev {dev} parent 1:{parent} classid 1:{classid} htb rate {rate} ceil {ceil} burst 256k cburst 256k prio 1 quantum 1500\n")
+            if qdisc:
+                out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
+
+
     def write_tc_up(self, out):
         top_mbit = self.conf_uplink_mbit
         sub_mbit = int(top_mbit * 0.975)
@@ -792,24 +828,20 @@ class Hosts:
             out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate {sub_mbit}bit ceil {sub_mbit}Mbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
 
         for (user, shaping) in self.user2shaping.items():
-            if shaping is None:
-                continue
-            (_type, details) = shaping
-            if _type == "legacy":
-                (rate, ceil) = details
-                rate = f"{rate}kbit"
-                ceil = f"{ceil}kbit"
-            elif _type == "class":
-                cls = details
-                #TODO: scale with ceil?
-                rate = "200kbit"
-                ceil = self.shaping_classes[cls]
-            else:
-                raise RuntimeError(f"Unknown shaping {shaping} for user {user}")
             classid = self.get_user_classid(user)
-            for dev in (self.dev_lan, self.dev_wan):
-                out.write(f"class add dev {dev} parent 1:1025 classid 1:{classid} htb rate {rate} ceil {ceil} burst 256k cburst 256k prio 1 quantum 1500\n")
-                out.write(f"qdisc add dev {dev} parent 1:{classid} handle {classid} fq_codel\n")
+            parent = 1025
+            if user in self.users_with_subclasses:
+                super_classid = self.get_classid()
+                self.__write_tc_shaping(out, super_classid, parent, shaping, False)
+                parent = super_classid
+                self.user2superclassid[user] = super_classid
+            self.__write_tc_shaping(out, classid, parent, shaping)
+
+        for (ip, shaping) in self.ip2shaping.items():
+            user = self.ip2user[ip]
+            parent = self.user2superclassid[user]
+            classid = self.ip2classid[ip]
+            self.__write_tc_shaping(out, classid, parent, shaping)
 
         for dev in (self.dev_lan, self.dev_wan):
             out.write(f"class add dev {dev} parent 1:1025 classid 1:3 htb rate 64kbit ceil 128kbit burst 256k cburst 256k prio 7 quantum 1500\n")
