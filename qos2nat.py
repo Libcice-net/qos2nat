@@ -164,6 +164,7 @@ class Hosts:
         self.dns_db = None
         self.dns_rev_db = None
         self.shaping_classes = dict()
+        self.shaping_class2user = dict()
 
         # from iptables stats
         self.ip2download = dict()
@@ -227,9 +228,9 @@ class Hosts:
         else:
             self.host2ip[host] = ip
 
-        self.users.add(user)
         self.ip2user[ip] = user
         if host == user:
+            self.users.add(user)
             if user in self.user2shaping:
                 raise ConfError(f"Multiple shaping non-sharing definitions for user {user}: "
                                    f"{self.user2shaping[user]} and {shaping} for ip {ip}")
@@ -337,8 +338,14 @@ class Hosts:
                     else:
                         raise ConfError(f"did not match key=value expected in [classes]: {line}")
                     cls = m.group(1)
-                    speed = m.group(2)
-                    self.shaping_classes[cls] = speed
+                    for prop in m.group(2).split(","):
+                        if m := re.match(r"user=([\S]+)", prop):
+                            user = m.group(1)
+                            self.users.add(user)
+                            self.shaping_class2user[cls] = user
+                        else:
+                            speed = prop
+                            self.shaping_classes[cls] = speed
                     continue
 
                 m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
@@ -379,6 +386,10 @@ class Hosts:
                         if cls not in self.shaping_classes:
                             raise ConfError(f"unknown shaping class: {shaping}")
                         shaping = ("class", cls)
+                        if cls in self.shaping_class2user:
+                            user = self.shaping_class2user[cls]
+                            if user not in self.user2shaping:
+                                self.user2shaping[user] = shaping
                     else:
                         raise ConfError(f"unknown shaping: {shaping}")
 
@@ -390,6 +401,10 @@ class Hosts:
                 logpe(err)
 
         self.free_public_ips = set(self.all_public_ips)
+
+        for (ip, user) in self.ip2user.items():
+            if user not in self.users:
+                raise ConfError(f"qos.conf error: ip {ip} is sharing-{user} but user {user} has no primary entry")
 
         for user in self.users:
             if user not in self.user2shaping:
@@ -598,7 +613,8 @@ class Hosts:
                 (olduser, oldpubip, newuser) = self.nat_conf_user_renames[ip]
                 ipchange = ""
                 # qos.conf line changed from user that still exists, or to user that already exists, so change public IP
-                if olduser in self.user2ip or newuser in self.user2pubip:
+                if olduser in self.users or newuser in self.user2pubip:
+                    fresh = ""
                     if newuser in self.user2pubip:
                         newpubip = self.user2pubip[newuser]
                     elif newuser in self.nat_conf_user2pubip_to_add:
@@ -606,8 +622,9 @@ class Hosts:
                     else:
                         newpubip = self.get_new_public_ip(newuser)
                         self.nat_conf_user2pubip_to_add[newuser] = newpubip
+                        fresh = "newly assigned "
 
-                    ipchange = f" and changing public IP {oldpubip} to {newpubip}"
+                    ipchange = f" and changing public IP {oldpubip} to {fresh}{newpubip}"
                     self.nat_conf_pubip_changes[ip] = (oldpubip, newpubip)
                 fwds = 0
                 if ip in self.ip2portfwd:
