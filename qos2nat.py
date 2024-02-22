@@ -166,7 +166,7 @@ class Hosts:
         self.shaping_classes = dict()
         self.shaping_class2user = dict()
 
-        # from iptables stats
+        # from nftables stats
         self.ip2download = dict()
         self.ip2upload = dict()
         self.ip2download_packets = dict()
@@ -782,37 +782,6 @@ class Hosts:
         out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" ip daddr vmap @post_map\n")
         out.write(f"add rule ip mangle postrouting oifname \"{self.dev_lan}\" counter packets 0 bytes 0 jump post_common\n")
 
-
-    def write_iptables_mangle(self, out):
-        localnet = self.local_network
-
-        out.write("*mangle\n")
-        out.write(":PREROUTING ACCEPT [0:0]\n")
-        out.write(":POSTROUTING ACCEPT [0:0]\n")
-        out.write(":INPUT ACCEPT [0:0]\n")
-        out.write(":OUTPUT ACCEPT [0:0]\n")
-        out.write(":FORWARD ACCEPT [0:0]\n")
-        # TODO config
-        out.write(f"-A FORWARD -d {localnet} -o {self.dev_wan} -j ACCEPT\n")
-        out.write(f"-A POSTROUTING -s {localnet} -o {self.dev_wan} -j ACCEPT\n")
-
-        for (ip, user) in self.ip2user.items():
-            if user not in self.user2shaping:
-                logp(f"skip ip {ip} of user {user} due to no defined shaping")
-                continue
-            classid = self.get_user_classid(user)
-            post = f"-A POSTROUTING -d {ip} -o {self.dev_lan}"
-            forw = f"-A FORWARD -s {ip} -o {self.dev_wan}"
-            for match in (post, forw):
-                out.write(f"{match} -j CLASSIFY --set-class 1:{classid}\n")
-                out.write(f"{match} -j ACCEPT\n")
-
-        out.write(f"-A POSTROUTING -o {self.dev_lan} -j CLASSIFY --set-class 1:3\n")
-        out.write(f"-A POSTROUTING -o {self.dev_lan} -j ACCEPT\n")
-        out.write(f"-A FORWARD -o {self.dev_wan} -j CLASSIFY --set-class 1:3\n")
-        out.write(f"-A FORWARD -o {self.dev_wan} -j ACCEPT\n")
-        out.write("COMMIT\n")
-
     def __write_tc_shaping(self, out, classid, parent, shaping, qdisc = True):
         if shaping is None:
             return
@@ -939,43 +908,6 @@ class Hosts:
         if table_based is None:
             raise ConfError("Content of nft list table mangle not recognized")
 
-    def read_iptables_stats(self, stats):
-        for line in stats:
-            line = line.strip()
-            m = re.match(r"([0-9]+)[ \t]+([0-9]+)[ \t]+CLASSIFY[ \t]+all[ \t]+--[ \t]+\*[ \t]+([\S]+)[ \t]+([0-9./]+)[ \t]+([0-9./]+)[ \t]+CLASSIFY set 1:([0-9]+)", line)
-            if not m:
-                continue
-
-            (pkts, _bytes, dev, src_ip, tgt_ip, classid) = m.groups()
-
-            down = True
-            if dev == self.dev_lan and src_ip == "0.0.0.0/0":
-                if tgt_ip == "0.0.0.0/0":
-                    continue
-                ip = ip_address(tgt_ip)
-
-            elif dev == self.dev_wan and tgt_ip == "0.0.0.0/0":
-                if src_ip == "0.0.0.0/0":
-                    continue
-                ip = ip_address(src_ip)
-                down = False
-            else:
-                continue
-
-            if ip not in self.local_network:
-                    continue
-
-            #print (f"IP {ip} {'download' if down else 'upload'} {_bytes} bytes")
-            _bytes = int(_bytes)
-            self.ip2traffic[ip] = self.ip2traffic[ip] + _bytes
-            if down:
-                self.ip2download[ip] = _bytes
-            else:
-                self.ip2upload[ip] = _bytes
-            if ip in self.ip2user:
-                user = self.ip2user[ip]
-                self.set_user_classid(user, int(classid))
-
     def write_day_html(self, html):
         if errors_log:
             html.write(f"<pre>{errors_log}</pre>")
@@ -1071,14 +1003,6 @@ class Hosts:
             except Exception as e:
                 print(f"Failed to process {log_file}: {e}")
 
-
-def iptables_get_stats(statsfile):
-    if args.devel:
-        runargs = ["cat", "iptables.stats"]
-    else:
-        runargs = ["/usr/sbin/iptables", "-L", "-v", "-x", "-n", "-t", "mangle"]
-    ret = subprocess.run(runargs, stdout=statsfile, check=True)
-
 def nft_get_stats(statsfile):
     if args.devel:
         runargs = ["cat", "nft.stats"]
@@ -1089,26 +1013,17 @@ def nft_get_stats(statsfile):
 
 
 def get_mangle_stats(tmpdir):
-    if not args.iptables:
-        logpc("nft mangle stats: reading ... ", True)
-        ret = 1
-        with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:
-            ret = nft_get_stats(stats)
+    logpc("nft mangle stats: reading ... ", True)
+    ret = 1
+    with open(f"{tmpdir}/nft.mangle.old", 'w') as stats:
+        ret = nft_get_stats(stats)
 
-        if ret == 0:
-            logp(f"parsing ...", True)
-            with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
-                hosts.read_nft_stats(stats)
-        else:
-            logp("Could not get mangle stats (flushed table?), stats will be zero")
+    if ret == 0:
+        logp(f"parsing ...", True)
+        with open(f"{tmpdir}/nft.mangle.old", 'r') as stats:
+            hosts.read_nft_stats(stats)
     else:
-        logp("Getting iptables stats", True)
-        with open(f"{tmpdir}/iptables.mangle.old", 'w') as stats:
-            iptables_get_stats(stats)
-
-        logp(f"Reading iptables.stats ... ", True)
-        with open(f"{tmpdir}/iptables.mangle.old", 'r') as stats:
-            hosts.read_iptables_stats(stats)
+        logp("Could not get mangle stats (flushed table?), stats will be zero")
 
 def reload_shaping(hosts, tmpdir, reset_stats):
 
@@ -1121,34 +1036,21 @@ def reload_shaping(hosts, tmpdir, reset_stats):
             mangle_up_nft_name = f"{config_prefix}{config_mangle_up}.nft"
             tc_up_name = f"{config_prefix}{config_tc_up}"
 
-        if args.iptables:
-            logpc(f"Writing {mangle_up_name} ", True)
-            with open(mangle_up_name, 'w') as mangle:
-                hosts.write_iptables_mangle(mangle)
-        else:
-            logpc(f"Writing {mangle_up_nft_name} ", True)
-            with open(mangle_up_nft_name, 'w') as mangle:
-                hosts.write_nft_mangle(mangle, reset_stats)
+        logpc(f"Writing {mangle_up_nft_name} ", True)
+        with open(mangle_up_nft_name, 'w') as mangle:
+            hosts.write_nft_mangle(mangle, reset_stats)
 
         logp(f"{tc_up_name}", True)
         with open(tc_up_name, 'w') as tc_file:
             hosts.write_tc_up(tc_file)
 
         if not args.devel:
-            if not args.iptables:
-                if args.dry_run:
-                    logp(f"Testing (no commit) {mangle_up_nft_name} via nft -c ... ", True)
-                    subprocess.run(["/usr/sbin/nft", "-c", "-f", mangle_up_nft_name], check=True)
-                else:
-                    logp(f"Loading {mangle_up_nft_name} via nft ... ", True)
-                    subprocess.run(["/usr/sbin/nft", "-f", mangle_up_nft_name], check=True)
+            if args.dry_run:
+                logp(f"Testing (no commit) {mangle_up_nft_name} via nft -c ... ", True)
+                subprocess.run(["/usr/sbin/nft", "-c", "-f", mangle_up_nft_name], check=True)
             else:
-                if args.dry_run:
-                    logp(f"Testing (no commit) {mangle_up_name} via iptables-restore ... ", True)
-                    subprocess.run(["/usr/sbin/iptables-restore", "-t", mangle_up_name], check=True)
-                else:
-                    logp(f"Loading {mangle_up_name} via iptables-restore ... ", True)
-                    subprocess.run(["/usr/sbin/iptables-restore", mangle_up_name], check=True)
+                logp(f"Loading {mangle_up_nft_name} via nft ... ", True)
+                subprocess.run(["/usr/sbin/nft", "-f", mangle_up_nft_name], check=True)
 
             if not args.dry_run:
                 logpc("Flushing old tc rules ... ", True)
@@ -1174,7 +1076,7 @@ parser.add_argument("qos_conf", nargs='?', default=f"{config_prefix}{config_qos_
 parser.add_argument("-f", action="store_true",
                     help="force regenerate and reload nat and shaping even if no changes were detected")
 parser.add_argument("--dry-run", action="store_true",
-                    help="dry run on real system, don't actually replace nat.conf or make changes to nft (iptables) and tc")
+                    help="dry run on real system, don't actually replace nat.conf or make changes to nftables and tc")
 parser.add_argument("-v", action="store_true",
                     help="verbose printing of detailed steps (otherwise only logged to file)")
 parser.add_argument("-p", action="store_true",
@@ -1185,10 +1087,8 @@ parser.add_argument("-m", action="store_true",
                     help="only generate html stats for previous month")
 parser.add_argument("-y", action="store_true",
                     help="only generate html stats for previous year")
-parser.add_argument("--iptables", action="store_true",
-                    help="(deprecated) use iptables instead of nftables, no partial update support, low performance for shaping!")
 parser.add_argument("--devel", action="store_true",
-                    help="(dev only) development run, prefix all paths with local directory, don't execute iptables...")
+                    help="(dev only) development run, prefix all paths with local directory, don't execute nft...")
 args = parser.parse_args()
 
 if args.devel:
@@ -1339,27 +1239,15 @@ try:
         else:
             logp("No needed updates detected but continuing due to -f parameter.")
 
-    if not args.iptables:
-        if args.dry_run:
-            nat_up_nft_name = "/tmp/nat.up.nft"
-        else:
-            nat_up_nft_name = f"{config_prefix}{config_nat_up}.nft"
-        logpc(f"Writing {nat_up_nft_name} ", True)
-        with open(f"{config_prefix}{config_nat_global}.nft", 'r') as nat_global_nft, open(nat_up_nft_name, 'w') as nat_up_nft:
-            for line in nat_global_nft:
-                nat_up_nft.write(line)
-            hosts.write_nat_up_nft(nat_up_nft)
+    if args.dry_run:
+        nat_up_nft_name = "/tmp/nat.up.nft"
     else:
-        if args.dry_run:
-            nat_up_name = "/tmp/nat.up"
-        else:
-            nat_up_name = f"{config_prefix}{config_nat_up}"
-        logpc(f"Writing {nat_up_name} ", True)
-        with open(f"{config_prefix}{config_nat_global}", 'r') as nat_global, open(nat_up_name, 'w') as nat_up:
-            nat_up.write("# generated by qos2nat.py\n")
-            for line in nat_global:
-                nat_up.write(line)
-            hosts.write_nat_up(nat_up)
+        nat_up_nft_name = f"{config_prefix}{config_nat_up}.nft"
+    logpc(f"Writing {nat_up_nft_name} ", True)
+    with open(f"{config_prefix}{config_nat_global}.nft", 'r') as nat_global_nft, open(nat_up_nft_name, 'w') as nat_up_nft:
+        for line in nat_global_nft:
+            nat_up_nft.write(line)
+        hosts.write_nat_up_nft(nat_up_nft)
 
     if args.dry_run:
         portmap_name = "/tmp/portmap.txt"
@@ -1384,22 +1272,14 @@ try:
         hosts.write_dns_reverse(db)
 
     if not args.devel:
-        if not args.iptables:
-            if args.dry_run:
-                logp("Testing (no commit) nat.up.nft via nft -t ... ", True)
-                subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
-            else:
-                logp("Loading new nat.up.nft", True)
-                subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
+        if args.dry_run:
+            logp("Testing (no commit) nat.up.nft via nft -t ... ", True)
+            subprocess.run(["/usr/sbin/nft", "-c", "-f", nat_up_nft_name], check=True)
         else:
-            if args.dry_run:
-                logp("Testing (no commit) nat.up via iptables-restore ... ", True)
-                subprocess.run(["/usr/sbin/iptables-restore", "-t", nat_up_name], check=True)
-            else:
-                logp("Loading new nat.up to iptables", True)
-                subprocess.run(["/usr/sbin/iptables-restore", nat_up_name], check=True)
+            logp("Loading new nat.up.nft", True)
+            subprocess.run(["/usr/sbin/nft", "-f", nat_up_nft_name], check=True)
     else:
-        logp("Skipping iptables-restore due to --devel", True)
+        logp("Skipping nftables loading due to --devel", True)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         get_mangle_stats(tmpdir)
