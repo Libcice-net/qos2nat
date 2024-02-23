@@ -187,11 +187,6 @@ class Hosts:
         self.last_classid += 1
         return self.last_classid
 
-    def get_user_classid(self, user):
-        if user not in self.user2classid:
-            self.user2classid[user] = self.get_classid()
-        return self.user2classid[user]
-
     def get_shaping_ceilh(self, shaping):
         (_type, details) = shaping
         if _type == "legacy":
@@ -200,14 +195,11 @@ class Hosts:
         elif _type == "class":
             cls = details
             ceil = self.shaping_classes[cls]
+        elif _type == "speed":
+            ceil = details
         else:
             raise RuntimeError(f"Unknown shaping {shaping}")
         return ceil
-
-    def set_user_classid(self, user, classid):
-        self.user2classid[user] = classid
-        if classid > self.last_classid:
-            self.last_classid = classid
 
     def add_qos(self, ip, host, user, shaping):
         if ip in self.ip2host:
@@ -338,14 +330,20 @@ class Hosts:
                     else:
                         raise ConfError(f"did not match key=value expected in [classes]: {line}")
                     cls = m.group(1)
+                    user = None
+                    total_speed = None
                     for prop in m.group(2).split(","):
                         if m := re.match(r"user=([\S]+)", prop):
                             user = m.group(1)
                             self.users.add(user)
                             self.shaping_class2user[cls] = user
+                        elif m := re.match(r"total=([\S]+)", prop):
+                            total_speed = m.group(1)
                         else:
                             speed = prop
                             self.shaping_classes[cls] = speed
+                    if user is not None and total_speed is not None:
+                        self.user2shaping[user] = ("speed", total_speed)
                     continue
 
                 m = re.match(r"([0-9.]+)[ \t]+([\S]+)[ \t]+#([\S]+).*", line)
@@ -388,8 +386,6 @@ class Hosts:
                         shaping = ("class", cls)
                         if cls in self.shaping_class2user:
                             user = self.shaping_class2user[cls]
-                            if user not in self.user2shaping:
-                                self.user2shaping[user] = shaping
                     else:
                         raise ConfError(f"unknown shaping: {shaping}")
 
@@ -468,7 +464,7 @@ class Hosts:
                     logp(f"Warning: In nat.conf {user} has public IP {pubip} but also {pubip_other}")
             else:
                 self.ipuser2pubip[ipuser] = pubip
-            if self.user2shaping[ipuser] is None:
+            if ipuser in self.user2shaping and self.user2shaping[ipuser] is None:
                 self.nat_conf_ips_no_shaping.add(ip)
 
         if user in self.user2pubip:
@@ -749,7 +745,7 @@ class Hosts:
             if ip in self.ip2classid:
                 classid = self.ip2classid[ip]
             else:
-                classid = self.get_user_classid(user)
+                classid = self.user2classid[user]
 
             ipstr = str(ip).replace(".", "_")
             for prefix in ("post", "forw"):
@@ -795,6 +791,9 @@ class Hosts:
             #TODO: scale with ceil?
             rate = "200kbit"
             ceil = self.shaping_classes[cls]
+        elif _type == "speed":
+            rate = "200kbit"
+            ceil = details
         else:
             raise RuntimeError(f"Unknown shaping {shaping}")
         for dev in (self.dev_lan, self.dev_wan):
@@ -814,18 +813,22 @@ class Hosts:
             out.write(f"class add dev {dev} parent 1:1 classid 1:1025 htb rate {sub_mbit}bit ceil {sub_mbit}Mbit burst 10300k cburst 10300k prio 1 quantum 20000\n")
 
         for (user, shaping) in self.user2shaping.items():
-            classid = self.get_user_classid(user)
             parent = 1025
             if user in self.users_with_subclasses:
                 super_classid = self.get_classid()
                 self.__write_tc_shaping(out, super_classid, parent, shaping, False)
                 parent = super_classid
                 self.user2superclassid[user] = super_classid
-            self.__write_tc_shaping(out, classid, parent, shaping)
+            if user in self.user2classid:
+                classid = self.user2classid[user]
+                self.__write_tc_shaping(out, classid, parent, shaping)
 
         for (ip, shaping) in self.ip2shaping.items():
             user = self.ip2user[ip]
-            parent = self.user2superclassid[user]
+            if user in self.user2superclassid:
+                parent = self.user2superclassid[user]
+            else:
+                parent = 1025
             classid = self.ip2classid[ip]
             self.__write_tc_shaping(out, classid, parent, shaping)
 
@@ -901,9 +904,6 @@ class Hosts:
             else:
                 self.ip2upload[ip] = _bytes
                 self.ip2upload_packets[ip] = packets
-            #if ip in self.ip2user:
-            #    user = self.ip2user[ip]
-            #    self.set_user_classid(user, int(classid))
 
         if table_based is None:
             raise ConfError("Content of nft list table mangle not recognized")
