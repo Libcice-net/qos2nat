@@ -333,15 +333,17 @@ class Hosts:
                     user = None
                     total_speed = None
                     for prop in m.group(2).split(","):
-                        if m := re.match(r"user=([\S]+)", prop):
+                        if m := re.match(r"[0-9]+[kKmMgG]?bit", prop):
+                            speed = prop
+                            self.shaping_classes[cls] = speed
+                        elif m := re.match(r"user=([\S]+)", prop):
                             user = m.group(1)
                             self.users.add(user)
                             self.shaping_class2user[cls] = user
-                        elif m := re.match(r"total=([\S]+)", prop):
+                        elif m := re.match(r"total=([0-9]+[kKmMgG]?bit)", prop):
                             total_speed = m.group(1)
                         else:
-                            speed = prop
-                            self.shaping_classes[cls] = speed
+                            raise ConfError(f"unknown configuration '{prop}' of class {cls}")
                     if user is not None and total_speed is not None:
                         self.user2shaping[user] = ("speed", total_speed)
                     continue
@@ -376,7 +378,9 @@ class Hosts:
                     user = host
 
                 if shaping is not None:
-                    if m := re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping):
+                    if m:= re.match(r"speed-([0-9]+[kKmMgG]?bit)", shaping):
+                        shaping = ("speed", m.group(1))
+                    elif m := re.match(r"via-prometheus-([0-9]+)-([0-9]+)", shaping):
                         speeds = (int(m.group(1)), int(m.group(2)))
                         shaping = ("legacy", speeds)
                     elif m := re.match(r"class-([\S]+)", shaping):
@@ -646,6 +650,9 @@ class Hosts:
                 if user in self.user2ip and self.user2ip[user] in self.ip2pubip:
                     pubip = self.ip2pubip[self.user2ip[user]]
                     info = f"with existing user's public IP {pubip}"
+                elif user in self.user2pubip:
+                    pubip = self.user2pubip[user]
+                    info = f"with existing user's public IP {pubip}"
                 elif user in self.nat_conf_user2pubip_to_add:
                     pubip = self.nat_conf_user2pubip_to_add[user]
                     info = f"with pending new user's public IP {pubip}"
@@ -741,6 +748,8 @@ class Hosts:
         for (ip, user) in self.ip2user.items():
             if user not in self.user2shaping:
                 log(f"skip ip {ip} of user {user} due to no defined shaping")
+                continue
+            if self.user2shaping[user] is None:
                 continue
             if ip in self.ip2classid:
                 classid = self.ip2classid[ip]
