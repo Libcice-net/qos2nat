@@ -235,10 +235,9 @@ class Hosts:
             self.ip2classid[ip] = self.get_classid()
             self.users_with_subclasses.add(user)
 
-    def read_qos_conf(self, qosconf):
+    def read_qos_conf(self, qosconf, section = None):
 
         valid_sections = set(["hosts", "config", "classes"])
-        section = None
 
         line_num = 0
         for line in qosconf:
@@ -256,6 +255,13 @@ class Hosts:
                 continue
 
             try:
+                m = re.match(r"include \"([\S]+)\"", line)
+                if m:
+                    subconf_path = f"{config_prefix}{m.group(1)}";
+                    with open(subconf_path, 'r') as subconf:
+                        self.read_qos_conf(subconf, section);
+                    continue
+
                 m = re.match(r"\[([\S]+)\]", line)
                 if m:
                     section = m.group(1)
