@@ -165,6 +165,7 @@ class Hosts:
         self.dns_rev_db = None
         self.shaping_classes = dict()
         self.shaping_class2user = dict()
+        self.post_message = None
 
         # from nftables stats
         self.ip2download = dict()
@@ -290,9 +291,9 @@ class Hosts:
                     raise ConfError(f"no qos.conf [section] specified")
 
                 if section == "config":
-                    m = re.match(r"([\S]+)=\"([\S]+)\"", line)
+                    m = re.match(r"([\S]+)=\"([^\"]+)\"", line)
                     if not m:
-                        m = re.match(r"([\S]+)=([\S]+)", line)
+                        m = re.match(r"([\S]+)=(.+)", line)
                         if not m:
                             raise ConfError(f"did not match key=value expected in [config]: {line}")
                     key = m.group(1)
@@ -325,6 +326,8 @@ class Hosts:
                         self.dns_db = val
                     elif key == "dns_rev_db":
                         self.dns_rev_db = val
+                    elif key == "post_message":
+                        self.post_message = val
                     else:
                         raise ConfError(f"unknown key=value in [config]: {line}")
                     continue
@@ -1303,6 +1306,8 @@ try:
 
     logp(f"Done. Number of users: {len(hosts.users)}, number of local IPs: {len(hosts.ip2host)}, "
          f"remaining public IPs: {len(hosts.free_public_ips)}")
+    if hosts.post_message:
+        print(hosts.post_message)
 
 
 except ConfError as e:
