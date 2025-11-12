@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # vim:set shiftwidth=4 softtabstop=4 expandtab:
 
+from enum import Enum
 import sys
 import re
 import shutil
@@ -19,6 +20,7 @@ config_prefix=""
 
 config_qos_conf = "/etc/qos.conf"
 config_nat_conf = "/etc/nat.conf"
+config_nat_conf_local = "/etc/nat.conf.local"
 config_nat_global = "/etc/nat_global.conf"
 config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
@@ -115,6 +117,11 @@ def humankbps(val):
     val //= 1000
 
     return f"{val} Mbps"
+
+class NatConfType(Enum):
+    LEGACY = 1
+    LOCAL = 2
+    PORTS = 3
 
 class Hosts:
 
@@ -528,7 +535,7 @@ class Hosts:
             if is_auto_entry:
                 self.nat_conf_ip_already_written.add(ip)
 
-    def read_nat_conf(self, natconf, natconf_new=None):
+    def read_nat_conf(self, natconf, natconf_new=None, _type=NatConfType.LEGACY):
 
         line_num = 0
         for line in natconf:
@@ -537,11 +544,42 @@ class Hosts:
             # remove leading/trailing whitespace
             #line = line.strip()
 
-            m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]# ([\S]+)(.*)", line)
-            if not m:
-                raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
+            if _type == NatConfType.LEGACY:
+                m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]# ([\S]+)(.*)", line)
+                if not m:
+                    raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
 
-            (pubip, ip, port_src, port_dst, user, comment) = m.groups()
+                (pubip, ip, port_src, port_dst, user, comment) = m.groups()
+            elif _type == NatConfType.LOCAL:
+                m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)", line)
+                if not m:
+                    raise ConfError(f"Error parsing nat.conf.local line {line_num}: {line}")
+
+                (pubip, ip, user) = m.groups()
+                comment = ""
+                port_src = "*"
+                port_dst = "*"
+            elif _type == NatConfType.PORTS:
+                m = re.match(r"([\S]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]#(.*)", line)
+                if not m:
+                    raise ConfError(f"Error parsing nat.conf line {line_num}: {line}")
+
+                (user_host, port_src, port_dst, comment) = m.groups()
+
+                (user, _, host) = user_host.partition(":")
+
+                if host == "":
+                    host = user
+
+                if user in self.user2pubip:
+                    pubip = self.user2pubip[user]
+                else:
+                    pubip = user
+
+                if port_dst == "*":
+                    port_dst = port_src
+
+                ip = self.host2ip[host]
 
             try:
                 pubip = ip_address(pubip)
@@ -1107,6 +1145,8 @@ parser.add_argument("-y", action="store_true",
                     help="only generate html stats for previous year")
 parser.add_argument("--devel", action="store_true",
                     help="(dev only) development run, prefix all paths with local directory, don't execute nft...")
+parser.add_argument("--convert-nat-conf", action="store_true",
+                    help="(one time) convert legacy nat.conf to nat.conf.new and nat.conf.local.new")
 args = parser.parse_args()
 
 if args.devel:
@@ -1206,6 +1246,59 @@ if args.r:
     except ConfError as e:
         logp(e)
         sys.exit(1)
+
+if args.convert_nat_conf:
+    try:
+        with open(qos_conf_path, 'r') as qosconf:
+            hosts.read_qos_conf(qosconf)
+
+        with open(f"{config_prefix}{config_nat_conf}", 'r') as natconf:
+            hosts.read_nat_conf(natconf)
+
+        with open(f"{config_prefix}{config_nat_conf_local}.new", 'w') as natconf:
+            for (ip, pubip) in hosts.ip2pubip.items():
+                user = hosts.ip2user[ip]
+                natconf.write(f"{pubip}\t{ip}\t{user}\n")
+
+        with open(f"{config_prefix}{config_nat_conf}.new", 'w') as natconf:
+            for (ip, fwds) in hosts.ip2portfwd.items():
+                for (pubip, pub_port, loc_port, user, comment) in sorted(fwds):
+                    loc_host = hosts.ip2host[ip];
+
+                    if pubip in hosts.pubip2user:
+                        pubuser = hosts.pubip2user[pubip]
+                        if pubuser == loc_host:
+                            pubuser_print = pubuser
+                        else:
+                            pubuser_print = f"{pubuser}:{loc_host}"
+                    else:
+                        pubuser_print = f"{pubip}:{loc_host}"
+
+                    if pubip in hosts.pubip2user and hosts.pubip2user[pubip] == user:
+                        user_print = ""
+                    else:
+                        user_print = f" {user}"
+
+                    if loc_port == pub_port:
+                        loc_port = "*"
+
+                    natconf.write(f"{pubuser_print:35}\t{pub_port}\t{loc_port}\t#{user_print}{comment}\n")
+
+        hosts2 = Hosts()
+
+        with open(qos_conf_path, 'r') as qosconf:
+            hosts2.read_qos_conf(qosconf)
+
+        with open(f"{config_prefix}{config_nat_conf_local}.new", 'r') as natconf:
+            hosts2.read_nat_conf(natconf, _type=NatConfType.LOCAL)
+
+        with open(f"{config_prefix}{config_nat_conf}.new", 'r') as natconf:
+            hosts2.read_nat_conf(natconf, _type=NatConfType.PORTS)
+
+    except ConfError as e:
+        print(e)
+        sys.exit(1)
+    sys.exit(0);
 
 try:
     timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
