@@ -10,6 +10,7 @@ import argparse
 import subprocess
 import tempfile
 import glob
+import os
 from ipaddress import ip_address, ip_network
 from collections import defaultdict
 import time
@@ -25,6 +26,7 @@ config_nat_global = "/etc/nat_global.conf"
 config_nat_up = "/etc/nat.up"
 config_logfile = "/var/log/qos2nat.log"
 config_nat_backup = "/etc/nat_backup/nat_conf_"
+config_nat_local_backup = "/etc/nat_backup/nat_conf_local_"
 config_portmap = "/var/www/portmap.txt"
 config_mangle_up = "/etc/mangle.up"
 config_tc_up = "/etc/tc.up"
@@ -129,6 +131,7 @@ class Hosts:
 
         # from nat.conf
         self.pubip2user = dict()
+        self.pubip2ip = dict()
         self.user2pubip = dict()
         self.ipuser2pubip = dict()
         self.ip2pubip = dict()
@@ -143,6 +146,7 @@ class Hosts:
         self.nat_conf_pubip_already_added = set()
         self.nat_conf_ips_to_change = dict() # ip -> new_ip
         self.nat_conf_user_renames = dict() # ip -> (olduser, oldpubip, newuser)
+        self.nat_conf_user_renames_by_user = dict() # olduser -> (newuser, ip, pubip)
         self.nat_conf_pubip_changes = dict() # ip -> (oldpubip, newpubip)
         # ips of users with private - should be deleted
         self.nat_conf_ips_no_shaping = set()
@@ -472,12 +476,13 @@ class Hosts:
         else:
             self.ip2pubip[ip] = pubip
 
-        if ip in self.ip2user and user != self.ip2user[ip]:
-            self.nat_conf_user_renames[ip] = (user, pubip, self.ip2user[ip])
-            return
-
         if ip in self.ip2user:
             ipuser = self.ip2user[ip]
+
+            if user != ipuser:
+                self.nat_conf_user_renames[ip] = (user, pubip, ipuser)
+                self.nat_conf_user_renames_by_user[user] = (ipuser, ip, pubip)
+
             if ipuser in self.ipuser2pubip:
                 pubip_other = self.ipuser2pubip[ipuser]
                 if pubip != pubip_other:
@@ -500,10 +505,11 @@ class Hosts:
                 logp(f"Warning: In nat.conf public IP {pubip} assigned to user {user} but also {user_other}")
         else:
             self.pubip2user[pubip] = user
+            self.pubip2ip[pubip] = ip
 
         self.free_public_ips.discard(pubip)
 
-    def write_nat_conf_line(self, pubip, ip, port_src, port_dst, user, comment, natconf_new):
+    def write_nat_conf_line(self, pubip, ip, port_src, port_dst, user, comment, natconf_new, _type):
 
         if ip in self.nat_conf_ips_to_delete:
             return
@@ -520,29 +526,60 @@ class Hosts:
                 if oldpubip == pubip:
                     pubip = newpubip
 
-        if pubip in self.nat_conf_pubip2ip_to_add and pubip not in self.nat_conf_pubip_already_added:
+        if _type != NatConfType.PORTS and pubip in self.nat_conf_pubip2ip_to_add and pubip not in self.nat_conf_pubip_already_added:
             for new_ip in self.nat_conf_pubip2ip_to_add[pubip]:
                 # we are adding new local IP to existing public IP, so write the line
                 # next to existing line
                 new_user = self.ip2user[new_ip]
-                natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
+                if _type == NatConfType.LEGACY:
+                    natconf_new.write(f"{pubip}\t{new_ip}\t*\t*\t# {new_user} added by script\n")
+                else:
+                    natconf_new.write(f"{pubip}\t{new_ip}\t{user}\n")
             self.nat_conf_pubip_already_added.add(pubip)
 
         is_auto_entry = (port_src == "*" and port_dst == "*")
 
         if not is_auto_entry or ip not in self.nat_conf_ip_already_written:
-            natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
+            if _type == NatConfType.LEGACY:
+                natconf_new.write(f"{pubip}\t{ip}\t{port_src}\t{port_dst}\t# {user}{comment}\n")
+            elif _type == NatConfType.LOCAL:
+                natconf_new.write(f"{pubip}\t{ip}\t{user}\n")
+            else:
+                loc_host = self.ip2host[ip];
+                pub_port = port_src
+                loc_port = port_dst
+
+                if pubip in self.pubip2user:
+                    pubuser = user
+                    if pubuser == loc_host:
+                        pubuser_print = pubuser
+                    else:
+                        pubuser_print = f"{pubuser}:{loc_host}"
+                else:
+                    pubuser_print = f"{pubip}:{loc_host}"
+
+                if loc_port == pub_port:
+                    loc_port = "*"
+
+                natconf_new.write(f"{pubuser_print:35}\t{pub_port}\t{loc_port}\t#{comment}\n")
             if is_auto_entry:
                 self.nat_conf_ip_already_written.add(ip)
 
     def read_nat_conf(self, natconf, natconf_new=None, _type=NatConfType.LEGACY):
+
+        _type_name = "nat.conf.local" if _type == NatConfType.LOCAL else "nat.conf"
 
         line_num = 0
         for line in natconf:
             line_num += 1
 
             # remove leading/trailing whitespace
-            #line = line.strip()
+            line = line.strip()
+
+            if line == "" or re.match("#.*", line):
+                if natconf_new:
+                    natconf_new.write(f"{line}\n")
+                continue
 
             if _type == NatConfType.LEGACY:
                 m = re.match(r"([0-9.]+)[ \t]+([0-9.]+)[ \t]+([\S]+)[ \t]([\S]+)[ \t]# ([\S]+)(.*)", line)
@@ -568,39 +605,54 @@ class Hosts:
 
                 (user, _, host) = user_host.partition(":")
 
+                if user in self.nat_conf_user_renames_by_user:
+                    (newuser, ip, pubip) = self.nat_conf_user_renames_by_user[user]
+
+                    user = newuser
+
+                    if host != "":
+                        ip = None
+                else:
+                    ip = None
+
+                    if user in self.user2pubip:
+                        pubip = self.user2pubip[user]
+                    else:
+                        pubip = user
+
                 if host == "":
                     host = user
-
-                if user in self.user2pubip:
-                    pubip = self.user2pubip[user]
-                else:
-                    pubip = user
 
                 if port_dst == "*":
                     port_dst = port_src
 
-                ip = self.host2ip[host]
+                if ip is None:
+                    if host in self.host2ip:
+                        ip = self.host2ip[host]
+                    else:
+                        ip = self.pubip2ip[pubip]
 
             try:
                 pubip = ip_address(pubip)
                 ip = ip_address(ip)
                 comment = comment.rstrip()
             except ValueError as e:
-                raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
+                raise ConfError(f"Error parsing {_type_name} line {line_num}: {e}")
 
             if ip not in self.local_network:
-                raise ConfError(f"Error parsing nat.conf line {line_num}: local IP {ip} not in local network {self.local_network}")
+                raise ConfError(f"Error parsing {_type_name} line {line_num}: local IP {ip} not in local network {self.local_network}")
 
             if pubip not in self.all_public_ips:
-                raise ConfError(f"Error parsing nat.conf line {line_num}: public IP {pubip} not in defined wan_ranges")
+                if comment.find("nowarn") == -1:
+                    raise ConfError(f"Error parsing {_type_name} line {line_num}: public IP {pubip} not in defined wan_ranges")
 
             if natconf_new:
-                self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new)
+                self.write_nat_conf_line(pubip, ip, port_src, port_dst, user, comment, natconf_new, _type)
             else:
                 try:
                     self.add_nat_conf(pubip, ip, port_src, port_dst, user, comment)
                 except ConfError as e:
-                    raise ConfError(f"Error parsing nat.conf line {line_num}: {e}")
+                    raise ConfError(f"Error parsing {_type_name} line {line_num}: {e}")
 
         # check for port forwards from public IPs that are not fully assigned to a user's private IP
         for (pubip, port_src) in self.pubip_port2ip_port:
@@ -614,9 +666,9 @@ class Hosts:
                 user = self.ip2user[ip]
                 logp(f"Warning: port forward for unassigned public IP {pubip}:{port_src} to {ip}:{port_dst} (user {user})")
 
-    def update_nat_conf(self, natconf_old, natconf_new):
+    def update_nat_conf(self, natconf_old, natconf_new, _type=NatConfType.LEGACY):
 
-        self.read_nat_conf(natconf_old, natconf_new)
+        self.read_nat_conf(natconf_old, natconf_new, _type)
 
         for (pubip, list_ip) in self.nat_conf_pubip2ip_to_add.items():
             if pubip in self.nat_conf_pubip_already_added:
@@ -725,6 +777,9 @@ class Hosts:
                 continue
 
             for (pubip, pub_port, loc_port, _, _) in self.ip2portfwd[ip]:
+                if pubip not in self.all_public_ips:
+                    continue
+
                 if pub_port == "all" and loc_port == "all":
                     nat_up.write(f"add rule ip nat PREROUTING ip daddr {pubip} "
                                  f"dnat to {ip}\n")
@@ -1316,22 +1371,47 @@ try:
     logp(f"Creating nat.conf backup {nat_conf_pre}", True)
     shutil.copyfile(f"{config_prefix}{config_nat_conf}", nat_conf_pre)
 
+    has_nat_conf_local = False
+    nat_conf_type = NatConfType.LEGACY
+
+    if os.path.isfile(f"{config_prefix}{config_nat_conf_local}"):
+        has_nat_conf_local = True
+        nat_conf_type = NatConfType.PORTS
+        nat_conf_local_pre = f"{config_prefix}{config_nat_local_backup}{timestamp}_pre"
+        logp(f"Creating nat.conf.local backup {nat_conf_local_pre}", True)
+        shutil.copyfile(f"{config_prefix}{config_nat_conf_local}", nat_conf_local_pre)
+
+        logp("Reading nat.conf.local...", True)
+        with open(f"{nat_conf_local_pre}", 'r') as natconf:
+            hosts.read_nat_conf(natconf, _type = NatConfType.LOCAL)
+
     logp("Reading nat.conf...", True)
     with open(f"{nat_conf_pre}", 'r') as natconf:
-        hosts.read_nat_conf(natconf)
+        hosts.read_nat_conf(natconf, _type = nat_conf_type)
 
     logp("Calculating nat.conf updates:", True)
     diffs = hosts.find_differences()
     if diffs > 0 or args.f:
+        if has_nat_conf_local:
+            nat_conf_local_post = f"{config_prefix}{config_nat_local_backup}{timestamp}_post"
+            logp(f"Writing {nat_conf_local_post} with {diffs} updates...")
+            with open(nat_conf_local_pre, 'r') as natconf, open(nat_conf_local_post, 'w') as natconf_new:
+                hosts.update_nat_conf(natconf, natconf_new, NatConfType.LOCAL)
+
         nat_conf_post = f"{config_prefix}{config_nat_backup}{timestamp}_post"
         logp(f"Writing {nat_conf_post} with {diffs} updates...")
         with open(nat_conf_pre, 'r') as natconf, open(nat_conf_post, 'w') as natconf_new:
-            hosts.update_nat_conf(natconf, natconf_new)
+            hosts.update_nat_conf(natconf, natconf_new, nat_conf_type)
 
         logp("Reading nat.conf.new back to verify no more updates detected...", True)
         hosts.init_nat_conf()
+
+        if has_nat_conf_local:
+            with open(nat_conf_local_post, 'r') as natconf:
+                hosts.read_nat_conf(natconf, _type = NatConfType.LOCAL)
+
         with open(nat_conf_post, 'r') as natconf:
-            hosts.read_nat_conf(natconf)
+            hosts.read_nat_conf(natconf, _type = nat_conf_type)
 
         check_diffs = hosts.find_differences()
         if check_diffs > 0:
@@ -1342,6 +1422,9 @@ try:
         else:
             logp(f"No differences, replacing nat.conf with {nat_conf_post}", True)
             shutil.copyfile(nat_conf_post, f"{config_prefix}{config_nat_conf}")
+            if has_nat_conf_local:
+                logp(f"Replacing nat.conf.local with {nat_conf_local_post}", True)
+                shutil.copyfile(nat_conf_local_post, f"{config_prefix}{config_nat_conf_local}")
     else:
         if not args.f:
             logp("No updates needed, exiting. Re-run with -f to force updating nat and traffic shaping.")
