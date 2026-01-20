@@ -670,12 +670,18 @@ class Hosts:
 
         self.read_nat_conf(natconf_old, natconf_new, _type)
 
+        if _type == NatConfType.PORTS:
+            return
+
         for (pubip, list_ip) in self.nat_conf_pubip2ip_to_add.items():
             if pubip in self.nat_conf_pubip_already_added:
                 continue
             for ip in list_ip:
                 user = self.ip2user[ip]
-                natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
+                if _type == NatConfType.LEGACY:
+                    natconf_new.write(f"{pubip}\t{ip}\t*\t*\t# {user} added by script\n")
+                else:
+                    natconf_new.write(f"{pubip}\t{ip}\t{user}\n")
 
     def get_new_public_ip(self, user):
         if len(self.free_public_ips) == 0:
